@@ -4,7 +4,7 @@ import{LineChart,Line,ResponsiveContainer,Tooltip}from'recharts'
 const FUNDS=[
   {id:'niscf', name:'Nippon India Small Cap',     searchQ:'Nippon India Small Cap',      goals:['retirement','education'],category:'Small Cap'},
   {id:'hdfcsc',name:'HDFC Small Cap',             searchQ:'HDFC Small Cap Fund',         goals:['retirement','education'],category:'Small Cap'},
-  {id:'hdfcmd',name:'HDFC Mid-Cap Opportunities', searchQ:'HDFC Mid-Cap Opportunities',  goals:['retirement','education'],category:'Mid Cap'},
+  {id:'hdfcmd',name:'HDFC Mid-Cap Opportunities', searchQ:'HDFC Midcap Opportunities',   goals:['retirement','education'],category:'Mid Cap'},
   {id:'nimcap',name:'Nippon India MultiCap',       searchQ:'Nippon India Multi Cap',      goals:['retirement'],           category:'Multi Cap'},
   {id:'hdfcfc',name:'HDFC Flexi Cap',             searchQ:'HDFC Flexi Cap Fund',         goals:['retirement','education'],category:'Flexi Cap'},
   {id:'mirae', name:'Mirae Large & Midcap',       searchQ:'Mirae Asset Large',           goals:['retirement','education'],category:'Large & Mid Cap'},
@@ -29,9 +29,62 @@ const SIG={
   stable: {id:'stable', label:'Stable',   color:'#185FA5',bg:'#E6F1FB'},
 }
 
+const DEFAULT_GOALS={
+  retirement:{label:'Retirement',yearsLeft:22,targetLakh:500,emoji:'🎯'},
+  education: {label:'Kids Education',yearsLeft:12,targetLakh:75,emoji:'🎓'},
+}
+
 const fmtINR=n=>`₹${parseFloat(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`
 const fmtPct=(n,d=2)=>n==null?'--':(n>=0?'+':'')+parseFloat(n).toFixed(d)+'%'
 const pctClr=n=>n==null?'var(--text-secondary)':n>=0?'#3B6D11':'#A32D2D'
+
+function goalContext(yearsLeft){
+  if(yearsLeft>15)return{
+    horizon:'Long term',color:'#3B6D11',bg:'#EAF3DE',
+    dip:`Strong buy signal. With ${yearsLeft}Y remaining every dip is an opportunity. Top up SIP or add a lump sum without hesitation.`,
+    run:`Continue SIP as planned. Strong momentum is fine at this horizon — stay invested.`,
+    watch:`Worth monitoring. If it crosses the dip threshold, add more.`,
+    neutral:`Stay fully invested. Continue SIP. Time is your biggest asset.`,
+    note:`${yearsLeft}Y horizon — stay 100% in equity. Use every correction.`,
+    noteColor:'#3B6D11',noteBg:'#EAF3DE',
+  }
+  if(yearsLeft>10)return{
+    horizon:'Long term',color:'#3B6D11',bg:'#EAF3DE',
+    dip:`Good buying opportunity. ${yearsLeft}Y is plenty of time to recover. Consider topping up SIP this month.`,
+    run:`Continue SIP. In the next 2–3 years, start thinking about a gradual large-cap tilt.`,
+    watch:`Monitor closely. A further dip is worth adding to.`,
+    neutral:`Stay invested. Continue SIP. Begin planning your glide path for the last 5 years.`,
+    note:`${yearsLeft}Y horizon — equity appropriate. Start glide-path planning around Year 5.`,
+    noteColor:'#3B6D11',noteBg:'#EAF3DE',
+  }
+  if(yearsLeft>5)return{
+    horizon:'Medium term',color:'#854F0B',bg:'#FAEEDA',
+    dip:`Buying opportunity, but be selective. With ${yearsLeft}Y left, begin shifting 20–30% of this fund toward large cap or hybrid over the next 1–2 years.`,
+    run:`Good time to book 15–20% profits and move them to a large-cap or hybrid fund as part of your glide path.`,
+    watch:`Be cautious. Use this as a prompt to review your allocation — you should be derisking gradually now.`,
+    neutral:`Begin glide path now. Target moving 10–15% per year into large cap or hybrid funds.`,
+    note:`${yearsLeft}Y horizon — start derisking. Target 60% equity, 40% hybrid/debt by Year 3.`,
+    noteColor:'#854F0B',noteBg:'#FAEEDA',
+  }
+  if(yearsLeft>2)return{
+    horizon:'Short term',color:'#A32D2D',bg:'#FCEBEB',
+    dip:`Do NOT add to small/mid cap. Capital preservation is the priority now. Consider switching this fund to a large-cap or debt fund instead.`,
+    run:`Book partial profits now and move to debt or arbitrage funds. Do not let greed delay your derisking.`,
+    watch:`Treat this as a sell signal, not a buy. Move at least 30–40% to safer instruments.`,
+    neutral:`Accelerate derisking immediately. With ${yearsLeft}Y left you should have max 30–40% in equity.`,
+    note:`${yearsLeft}Y horizon — capital preservation priority. Max 40% equity. Move rest to debt/arbitrage.`,
+    noteColor:'#A32D2D',noteBg:'#FCEBEB',
+  }
+  return{
+    horizon:'Imminent',color:'#A32D2D',bg:'#FCEBEB',
+    dip:`Goal is imminent — do not take any equity risk. Move everything to liquid or debt funds now.`,
+    run:`Book all profits immediately and move to a liquid fund. The goal is too close to risk a correction.`,
+    watch:`Exit this position. Move to liquid fund immediately.`,
+    neutral:`Exit equity completely. Move to liquid or ultra-short debt fund now.`,
+    note:`${yearsLeft}Y to goal — EXIT equity. Move 100% to liquid/debt funds immediately.`,
+    noteColor:'#A32D2D',noteBg:'#FCEBEB',
+  }
+}
 
 function computeMetrics(raw,avgDays,dipPct){
   if(!raw||raw.length<5)return null
@@ -61,21 +114,61 @@ function Tip({payload}){
   )
 }
 
-function Card({fund,status,m,data,isSel,avgDays,dipPct,onSelect,onRetry}){
+function GoalAdvice({fund,m,goalsConfig,avgDays,dipPct}){
+  if(!m)return null
+  const relevantGoals=fund.goals.filter(g=>goalsConfig[g])
+  if(!relevantGoals.length)return null
+  return(
+    <div style={{marginTop:10}}>
+      <div style={{fontSize:10,fontWeight:500,textTransform:'uppercase',letterSpacing:'.05em',color:'var(--text-secondary)',marginBottom:8}}>
+        Goal-Aware Advice
+      </div>
+      {relevantGoals.map(gid=>{
+        const gc=goalsConfig[gid]
+        const ctx=goalContext(gc.yearsLeft)
+        const advice=fund.category==='Arbitrage'
+          ?'Arbitrage fund — use as a parking instrument for near-term goal corpus. Low risk, predictable ~7% returns.'
+          :m.signal.id==='dip'?ctx.dip
+          :m.signal.id==='watch'?ctx.watch
+          :m.signal.id==='run'?ctx.run
+          :ctx.neutral
+        return(
+          <div key={gid} style={{marginBottom:8,padding:'10px 12px',background:ctx.bg,borderRadius:'var(--radius-md)'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+              <div style={{fontSize:11,fontWeight:500,color:ctx.color}}>
+                {gc.emoji} {gc.label}
+              </div>
+              <div style={{display:'flex',gap:6}}>
+                <span style={{fontSize:10,padding:'1px 7px',borderRadius:99,background:'rgba(0,0,0,0.06)',color:ctx.color,fontWeight:500}}>
+                  {gc.yearsLeft}Y left
+                </span>
+                <span style={{fontSize:10,padding:'1px 7px',borderRadius:99,background:'rgba(0,0,0,0.06)',color:ctx.color,fontWeight:500}}>
+                  Target ₹{gc.targetLakh}L
+                </span>
+              </div>
+            </div>
+            <div style={{fontSize:11,color:'var(--text-secondary)',lineHeight:1.65}}>{advice}</div>
+            <div style={{marginTop:6,fontSize:10,fontStyle:'italic',color:ctx.color,borderTop:'0.5px solid rgba(0,0,0,0.08)',paddingTop:5}}>
+              {ctx.note}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function Card({fund,status,m,data,isSel,avgDays,dipPct,goalsConfig,onSelect,onRetry}){
   const cs=CAT[fund.category]||CAT['Multi Cap']
-  const borderStyle='0.5px solid var(--border)'
+  const bs='0.5px solid var(--border)'
   return(
     <div
       onClick={()=>status==='done'&&onSelect()}
-      style={{
-        background:'var(--bg)',
-        borderRadius:'var(--radius-lg)',
-        padding:'1rem',
-        border:isSel?'1.5px solid var(--text-primary)':borderStyle,
+      style={{background:'var(--bg)',borderRadius:'var(--radius-lg)',padding:'1rem',
+        border:isSel?'1.5px solid var(--text-primary)':bs,
         cursor:status==='done'?'pointer':'default',
         transition:'border-color .15s',
-        boxShadow:isSel?'0 0 0 3px rgba(0,0,0,0.06)':'none',
-      }}
+        boxShadow:isSel?'0 0 0 3px rgba(0,0,0,0.06)':'none'}}
     >
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
         <div style={{flex:1,minWidth:0}}>
@@ -84,7 +177,7 @@ function Card({fund,status,m,data,isSel,avgDays,dipPct,onSelect,onRetry}){
           </span>
           <div style={{fontSize:13,fontWeight:500,marginTop:5,lineHeight:1.3}}>{fund.name}</div>
           <div style={{fontSize:10,color:'var(--text-secondary)',marginTop:2}}>
-            {fund.goals.map(g=>g==='retirement'?'🎯 Ret':'🎓 Edu').join(' · ')}
+            {fund.goals.map(g=>goalsConfig[g]?`${goalsConfig[g].emoji} ${goalsConfig[g].yearsLeft}Y`:g).join(' · ')}
           </div>
         </div>
         {m&&(
@@ -94,17 +187,12 @@ function Card({fund,status,m,data,isSel,avgDays,dipPct,onSelect,onRetry}){
         )}
       </div>
 
-      {status==='loading'&&(
-        <div style={{textAlign:'center',padding:'1.5rem 0',fontSize:11,color:'var(--text-secondary)'}}>
-          Fetching NAV data…
-        </div>
-      )}
+      {status==='loading'&&<div style={{textAlign:'center',padding:'1.5rem 0',fontSize:11,color:'var(--text-secondary)'}}>Fetching NAV data…</div>}
       {status==='error'&&(
         <div style={{textAlign:'center',padding:'1rem 0'}}>
           <div style={{fontSize:11,color:'#E24B4A',marginBottom:6}}>Could not load fund</div>
-          <button
-            onClick={e=>{e.stopPropagation();onRetry()}}
-            style={{fontSize:11,padding:'3px 10px',border:borderStyle,borderRadius:99,background:'transparent',color:'var(--text-secondary)'}}>
+          <button onClick={e=>{e.stopPropagation();onRetry()}}
+            style={{fontSize:11,padding:'3px 10px',border:bs,borderRadius:99,background:'transparent',color:'var(--text-secondary)'}}>
             Retry
           </button>
         </div>
@@ -126,7 +214,7 @@ function Card({fund,status,m,data,isSel,avgDays,dipPct,onSelect,onRetry}){
             </ResponsiveContainer>
           </div>
 
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:4,borderTop:borderStyle,paddingTop:8}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:4,borderTop:bs,paddingTop:8}}>
             {[['1M',m.r1m],[avgDays+'d avg',m.fromAvg],['1Y',m.r1y]].map(([l,v])=>(
               <div key={l}>
                 <div style={{fontSize:9,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'.04em'}}>{l}</div>
@@ -146,14 +234,10 @@ function Card({fund,status,m,data,isSel,avgDays,dipPct,onSelect,onRetry}){
             </div>
           </div>
 
-          {!isSel&&(
-            <div style={{fontSize:9,color:'var(--text-tertiary)',marginTop:8,textAlign:'center'}}>
-              tap for detail →
-            </div>
-          )}
+          {!isSel&&<div style={{fontSize:9,color:'var(--text-tertiary)',marginTop:8,textAlign:'center'}}>tap for detail →</div>}
 
           {isSel&&(
-            <div style={{marginTop:12,paddingTop:12,borderTop:borderStyle}}>
+            <div style={{marginTop:12,paddingTop:12,borderTop:bs}}>
               <div style={{fontSize:10,fontWeight:500,textTransform:'uppercase',letterSpacing:'.05em',color:'var(--text-secondary)',marginBottom:8}}>
                 Full Returns
               </div>
@@ -175,27 +259,11 @@ function Card({fund,status,m,data,isSel,avgDays,dipPct,onSelect,onRetry}){
                 </ResponsiveContainer>
               </div>
 
-              <div style={{padding:'10px 12px',background:m.signal.bg,borderRadius:'var(--radius-md)',marginBottom:10}}>
-                <div style={{fontSize:10,fontWeight:500,color:m.signal.color,marginBottom:4}}>
-                  {m.signal.label} · What this means
-                </div>
-                <div style={{fontSize:11,color:'var(--text-secondary)',lineHeight:1.65}}>
-                  {fund.category==='Arbitrage'
-                    ?'Arbitrage funds capture spot-futures spreads, targeting ~6–8% p.a. with minimal NAV volatility. Stability anchor in your Education portfolio.'
-                    :m.signal.id==='dip'
-                    ?`NAV is ${Math.abs(m.fromAvg).toFixed(1)}% below the ${avgDays}-day avg — past your ${dipPct}% threshold. With ${fund.goals.includes('retirement')?22:12}Y to goal, consider topping up your SIP or adding a lump sum.`
-                    :m.signal.id==='watch'
-                    ?`NAV is ${Math.abs(m.fromAvg).toFixed(1)}% below the ${avgDays}-day avg — approaching the ${dipPct}% alert zone. Monitor closely, no action needed yet.`
-                    :m.signal.id==='run'
-                    ?`NAV is ${m.fromAvg.toFixed(1)}% above the ${avgDays}-day avg — strong run. Continue SIP; avoid lump sums at elevated levels.`
-                    :`NAV is ${m.fromAvg>=0?'+':''}${m.fromAvg.toFixed(1)}% vs ${avgDays}-day avg — normal range. Continue SIP as planned.`
-                  }
-                </div>
-              </div>
+              <GoalAdvice fund={fund} m={m} goalsConfig={goalsConfig} avgDays={avgDays} dipPct={dipPct}/>
 
               {data&&(
-                <div style={{fontSize:9,color:'var(--text-tertiary)',lineHeight:1.5}}>
-                  Matched: {data.schemeName}<br/>Code: {data.schemeCode}
+                <div style={{fontSize:9,color:'var(--text-tertiary)',lineHeight:1.5,marginTop:8}}>
+                  Matched: {data.schemeName} · Code: {data.schemeCode}
                 </div>
               )}
             </div>
@@ -214,6 +282,12 @@ export default function App(){
   const[goal,setGoal]=useState('all')
   const[sel,setSel]=useState(null)
   const[rulesOpen,setRulesOpen]=useState(false)
+  const[goalsOpen,setGoalsOpen]=useState(false)
+  const[goalsConfig,setGoalsConfig]=useState(DEFAULT_GOALS)
+
+  const updateGoal=(gid,field,val)=>{
+    setGoalsConfig(p=>({...p,[gid]:{...p[gid],[field]:field==='yearsLeft'||field==='targetLakh'?Number(val):val}}))
+  }
 
   const loadFund=useCallback(async fund=>{
     setSt(p=>({...p,[fund.id]:'loading'}))
@@ -257,11 +331,11 @@ export default function App(){
     return acc
   },{})
 
-  const borderStyle='0.5px solid var(--border)'
+  const bs='0.5px solid var(--border)'
 
   return(
     <div style={{minHeight:'100vh',background:'var(--bg-tertiary)'}}>
-      <nav style={{background:'var(--bg)',borderBottom:borderStyle,padding:'0 1.5rem',position:'sticky',top:0,zIndex:50,display:'flex',alignItems:'center',justifyContent:'space-between',height:52}}>
+      <nav style={{background:'var(--bg)',borderBottom:bs,padding:'0 1.5rem',position:'sticky',top:0,zIndex:50,display:'flex',alignItems:'center',justifyContent:'space-between',height:52}}>
         <div style={{display:'flex',alignItems:'center',gap:10}}>
           <span style={{fontSize:18}}>📊</span>
           <div>
@@ -273,46 +347,36 @@ export default function App(){
           {Object.entries(sigCount).map(([id,count])=>{
             const s=SIG[id]
             if(!s||!count)return null
-            return(
-              <span key={id} style={{padding:'2px 9px',borderRadius:99,fontSize:11,fontWeight:500,background:s.bg,color:s.color}}>
-                {count} {s.label}
-              </span>
-            )
+            return<span key={id} style={{padding:'2px 9px',borderRadius:99,fontSize:11,fontWeight:500,background:s.bg,color:s.color}}>{count} {s.label}</span>
           })}
-          {done.length<FUNDS.length&&(
-            <span style={{fontSize:11,color:'var(--text-secondary)'}}>
-              Loading {done.length}/{FUNDS.length}…
-            </span>
-          )}
+          {done.length<FUNDS.length&&<span style={{fontSize:11,color:'var(--text-secondary)'}}>Loading {done.length}/{FUNDS.length}…</span>}
         </div>
       </nav>
 
-      <header style={{background:'var(--bg)',borderBottom:borderStyle,padding:'1.25rem 1.5rem 1rem'}}>
+      <header style={{background:'var(--bg)',borderBottom:bs,padding:'1.25rem 1.5rem 1rem'}}>
         <div style={{maxWidth:960,margin:'0 auto'}}>
           <div style={{fontSize:10,color:'var(--text-secondary)',letterSpacing:'.08em',textTransform:'uppercase',marginBottom:4}}>
             {new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}
           </div>
           <h1 style={{fontSize:26,fontWeight:600,letterSpacing:'-.02em',marginBottom:10}}>Portfolio Signals</h1>
-          <div style={{display:'flex',gap:8}}>
-            <span style={{padding:'3px 11px',background:'var(--bg-secondary)',borderRadius:99,fontSize:12,color:'var(--text-secondary)'}}>
-              🎯 Retirement <b style={{fontWeight:500}}>22Y</b>
-            </span>
-            <span style={{padding:'3px 11px',background:'var(--bg-secondary)',borderRadius:99,fontSize:12,color:'var(--text-secondary)'}}>
-              🎓 Education <b style={{fontWeight:500}}>12Y</b>
-            </span>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {Object.entries(goalsConfig).map(([id,g])=>(
+              <span key={id} style={{padding:'3px 11px',background:'var(--bg-secondary)',borderRadius:99,fontSize:12,color:'var(--text-secondary)'}}>
+                {g.emoji} {g.label} <b style={{fontWeight:500}}>{g.yearsLeft}Y</b> · ₹{g.targetLakh}L target
+              </span>
+            ))}
           </div>
         </div>
       </header>
 
       <main style={{maxWidth:960,margin:'0 auto',padding:'1.25rem 1.5rem'}}>
-        <div style={{display:'flex',gap:0,borderBottom:borderStyle,marginBottom:14}}>
+        <div style={{display:'flex',gap:0,borderBottom:bs,marginBottom:14}}>
           {[
-            {id:'all',      label:'All Funds',       n:FUNDS.length},
-            {id:'retirement',label:'Retirement (22Y)',n:FUNDS.filter(f=>f.goals.includes('retirement')).length},
-            {id:'education', label:'Education (12Y)', n:FUNDS.filter(f=>f.goals.includes('education')).length},
+            {id:'all',       label:'All Funds',       n:FUNDS.length},
+            {id:'retirement',label:'Retirement',       n:FUNDS.filter(f=>f.goals.includes('retirement')).length},
+            {id:'education', label:'Kids Education',   n:FUNDS.filter(f=>f.goals.includes('education')).length},
           ].map(t=>(
-            <button key={t.id}
-              onClick={()=>{setGoal(t.id);setSel(null)}}
+            <button key={t.id} onClick={()=>{setGoal(t.id);setSel(null)}}
               style={{padding:'7px 14px',border:'none',background:'none',fontSize:13,
                 color:goal===t.id?'var(--text-primary)':'var(--text-secondary)',
                 fontWeight:goal===t.id?500:400,
@@ -323,54 +387,91 @@ export default function App(){
           ))}
         </div>
 
-        <div style={{marginBottom:14}}>
-          <button
-            onClick={()=>setRulesOpen(!rulesOpen)}
-            style={{display:'flex',alignItems:'center',gap:6,padding:'5px 13px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:'var(--bg)',fontSize:12,color:'var(--text-secondary)'}}>
-            ⚙ Rules · {avgDays}d avg · {dipPct}% dip threshold {rulesOpen?'▲':'▼'}
+        <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+          <button onClick={()=>{setGoalsOpen(!goalsOpen);setRulesOpen(false)}}
+            style={{display:'flex',alignItems:'center',gap:6,padding:'5px 13px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:goalsOpen?'var(--text-primary)':'var(--bg)',fontSize:12,color:goalsOpen?'var(--bg)':'var(--text-secondary)'}}>
+            🎯 Goals {goalsOpen?'▲':'▼'}
           </button>
-          {rulesOpen&&(
-            <div style={{marginTop:8,padding:'1.1rem 1.25rem',background:'var(--bg)',borderRadius:'var(--radius-lg)',border:borderStyle}}>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1.25rem'}}>
-                <div>
-                  <div style={{fontSize:10,textTransform:'uppercase',letterSpacing:'.07em',color:'var(--text-secondary)',fontWeight:500,marginBottom:8}}>
-                    Rolling Avg Period
+          <button onClick={()=>{setRulesOpen(!rulesOpen);setGoalsOpen(false)}}
+            style={{display:'flex',alignItems:'center',gap:6,padding:'5px 13px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:rulesOpen?'var(--text-primary)':'var(--bg)',fontSize:12,color:rulesOpen?'var(--bg)':'var(--text-secondary)'}}>
+            ⚙ Rules · {avgDays}d avg · {dipPct}% threshold {rulesOpen?'▲':'▼'}
+          </button>
+        </div>
+
+        {goalsOpen&&(
+          <div style={{marginBottom:14,padding:'1.1rem 1.25rem',background:'var(--bg)',borderRadius:'var(--radius-lg)',border:bs}}>
+            <div style={{fontSize:11,fontWeight:500,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--text-secondary)',marginBottom:12}}>
+              Configure Your Goals
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+              {Object.entries(goalsConfig).map(([gid,g])=>(
+                <div key={gid} style={{padding:'12px 14px',background:'var(--bg-secondary)',borderRadius:'var(--radius-md)'}}>
+                  <div style={{fontSize:12,fontWeight:500,marginBottom:10}}>{g.emoji} {g.label}</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                    <div>
+                      <div style={{fontSize:10,color:'var(--text-secondary)',marginBottom:4}}>Years remaining</div>
+                      <input
+                        type="number" min="1" max="40" value={g.yearsLeft}
+                        onChange={e=>updateGoal(gid,'yearsLeft',e.target.value)}
+                        style={{width:'100%',padding:'5px 8px',border:bs,borderRadius:'var(--radius-md)',fontSize:13,fontWeight:500,background:'var(--bg)',color:'var(--text-primary)'}}
+                      />
+                    </div>
+                    <div>
+                      <div style={{fontSize:10,color:'var(--text-secondary)',marginBottom:4}}>Target corpus (₹ Lakh)</div>
+                      <input
+                        type="number" min="1" value={g.targetLakh}
+                        onChange={e=>updateGoal(gid,'targetLakh',e.target.value)}
+                        style={{width:'100%',padding:'5px 8px',border:bs,borderRadius:'var(--radius-md)',fontSize:13,fontWeight:500,background:'var(--bg)',color:'var(--text-primary)'}}
+                      />
+                    </div>
                   </div>
-                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                    {[7,14,30,60,90].map(d=>(
-                      <button key={d} onClick={()=>setAvgDays(d)}
-                        style={{padding:'4px 11px',borderRadius:99,border:'0.5px solid var(--border-strong)',
-                          background:avgDays===d?'var(--text-primary)':'transparent',
-                          color:avgDays===d?'var(--bg)':'var(--text-secondary)',fontSize:12}}>
-                        {d}d
-                      </button>
-                    ))}
+                  <div style={{marginTop:8,fontSize:10,padding:'5px 8px',borderRadius:'var(--radius-md)',
+                    background:goalContext(g.yearsLeft).bg,color:goalContext(g.yearsLeft).color}}>
+                    {goalContext(g.yearsLeft).note}
                   </div>
                 </div>
-                <div>
-                  <div style={{fontSize:10,textTransform:'uppercase',letterSpacing:'.07em',color:'var(--text-secondary)',fontWeight:500,marginBottom:8}}>
-                    Dip Alert Threshold
-                  </div>
-                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                    {[3,5,7,10,15].map(d=>(
-                      <button key={d} onClick={()=>setDipPct(d)}
-                        style={{padding:'4px 11px',borderRadius:99,border:'0.5px solid var(--border-strong)',
-                          background:dipPct===d?'#E24B4A':'transparent',
-                          color:dipPct===d?'white':'var(--text-secondary)',fontSize:12}}>
-                        {d}%
-                      </button>
-                    ))}
-                  </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {rulesOpen&&(
+          <div style={{marginBottom:14,padding:'1.1rem 1.25rem',background:'var(--bg)',borderRadius:'var(--radius-lg)',border:bs}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1.25rem'}}>
+              <div>
+                <div style={{fontSize:10,textTransform:'uppercase',letterSpacing:'.07em',color:'var(--text-secondary)',fontWeight:500,marginBottom:8}}>Rolling Avg Period</div>
+                <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                  {[7,14,30,60,90].map(d=>(
+                    <button key={d} onClick={()=>setAvgDays(d)}
+                      style={{padding:'4px 11px',borderRadius:99,border:'0.5px solid var(--border-strong)',
+                        background:avgDays===d?'var(--text-primary)':'transparent',
+                        color:avgDays===d?'var(--bg)':'var(--text-secondary)',fontSize:12}}>
+                      {d}d
+                    </button>
+                  ))}
                 </div>
               </div>
-              <div style={{marginTop:12,padding:'8px 12px',background:'var(--bg-secondary)',borderRadius:'var(--radius-md)',fontSize:11,color:'var(--text-secondary)',lineHeight:1.7}}>
-                🔴 <b style={{fontWeight:500}}>Buy Dip</b> = NAV &gt; {dipPct}% below {avgDays}d avg &nbsp;·&nbsp;
-                🟡 <b style={{fontWeight:500}}>Watch</b> = {(dipPct/2).toFixed(1)}–{dipPct}% below &nbsp;·&nbsp;
-                🟢 <b style={{fontWeight:500}}>Strong Run</b> = &gt; {dipPct}% above avg
+              <div>
+                <div style={{fontSize:10,textTransform:'uppercase',letterSpacing:'.07em',color:'var(--text-secondary)',fontWeight:500,marginBottom:8}}>Dip Alert Threshold</div>
+                <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                  {[3,5,7,10,15].map(d=>(
+                    <button key={d} onClick={()=>setDipPct(d)}
+                      style={{padding:'4px 11px',borderRadius:99,border:'0.5px solid var(--border-strong)',
+                        background:dipPct===d?'#E24B4A':'transparent',
+                        color:dipPct===d?'white':'var(--text-secondary)',fontSize:12}}>
+                      {d}%
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          )}
-        </div>
+            <div style={{marginTop:12,padding:'8px 12px',background:'var(--bg-secondary)',borderRadius:'var(--radius-md)',fontSize:11,color:'var(--text-secondary)',lineHeight:1.7}}>
+              🔴 <b style={{fontWeight:500}}>Buy Dip</b> = NAV &gt; {dipPct}% below {avgDays}d avg &nbsp;·&nbsp;
+              🟡 <b style={{fontWeight:500}}>Watch</b> = {(dipPct/2).toFixed(1)}–{dipPct}% below &nbsp;·&nbsp;
+              🟢 <b style={{fontWeight:500}}>Strong Run</b> = &gt; {dipPct}% above avg
+            </div>
+          </div>
+        )}
 
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:12}}>
           {visible.map(fund=>(
@@ -383,6 +484,7 @@ export default function App(){
               isSel={sel===fund.id}
               avgDays={avgDays}
               dipPct={dipPct}
+              goalsConfig={goalsConfig}
               onSelect={()=>setSel(sel===fund.id?null:fund.id)}
               onRetry={()=>loadFund(fund)}
             />
@@ -390,7 +492,7 @@ export default function App(){
         </div>
       </main>
 
-      <footer style={{padding:'1rem 1.5rem',marginTop:'1rem',borderTop:borderStyle,textAlign:'center',fontSize:10,color:'var(--text-tertiary)',lineHeight:1.7}}>
+      <footer style={{padding:'1rem 1.5rem',marginTop:'1rem',borderTop:bs,textAlign:'center',fontSize:10,color:'var(--text-tertiary)',lineHeight:1.7}}>
         Data: mfapi.in (public, free) · NAV updated post-market close · Informational only — not financial advice · Project Artha v1.0
       </footer>
     </div>
