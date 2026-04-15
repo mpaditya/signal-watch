@@ -4,7 +4,7 @@ import{LineChart,Line,ResponsiveContainer,Tooltip}from'recharts'
 const FUNDS=[
   {id:'niscf', name:'Nippon India Small Cap',     searchQ:'Nippon India Small Cap',      goals:['retirement','education'],category:'Small Cap'},
   {id:'hdfcsc',name:'HDFC Small Cap',             searchQ:'HDFC Small Cap Fund',         goals:['retirement','education'],category:'Small Cap'},
-  {id:'hdfcmd',name:'HDFC Mid-Cap Opportunities', searchQ:'HDFC Midcap Opportunities',   goals:['retirement','education'],category:'Mid Cap'},
+  {id:'hdfcmd',name:'HDFC Mid-Cap Opportunities', searchQ:'HDFC Mid Cap Fund',   goals:['retirement','education'],category:'Mid Cap'},
   {id:'nimcap',name:'Nippon India MultiCap',       searchQ:'Nippon India Multi Cap',      goals:['retirement'],           category:'Multi Cap'},
   {id:'hdfcfc',name:'HDFC Flexi Cap',             searchQ:'HDFC Flexi Cap Fund',         goals:['retirement','education'],category:'Flexi Cap'},
   {id:'mirae', name:'Mirae Large & Midcap',       searchQ:'Mirae Asset Large',           goals:['retirement','education'],category:'Large & Mid Cap'},
