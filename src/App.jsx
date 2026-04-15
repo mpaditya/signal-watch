@@ -1,3 +1,4 @@
+import GoalDashboard from './components/GoalDashboard';
 import{useState,useEffect,useMemo,useCallback}from'react'
 import{LineChart,Line,ResponsiveContainer,Tooltip}from'recharts'
 
@@ -553,6 +554,8 @@ export default function App(){
               onSelect={()=>setSel(sel===fund.id?null:fund.id)} onRetry={()=>loadFund(fund)}/>
           ))}
         </div>
+
+        <GoalDashboard goalsConfig={goalsConfig} funds={FUNDS} onUpdateGoalsConfig={setGoalsConfig} />
       </main>
 
       <footer style={{padding:'1rem 1.5rem',marginTop:'1rem',borderTop:bs,textAlign:'center',fontSize:10,color:'var(--text-tertiary)',lineHeight:1.7}}>
