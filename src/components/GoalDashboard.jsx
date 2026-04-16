@@ -135,13 +135,16 @@ export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig 
   const [corpusGoalId, setCorpusGoalId] = useState(null);
   const [corpusInput, setCorpusInput] = useState('');
 
-  // Build unified goals array: legacy + new
+  // Build unified goals array: legacy goals from goalsConfig + extra goals NOT already in goalsConfig
+  // (New goals get injected into goalsConfig on save, so we skip them from extraGoals to avoid dupes)
   const allGoals = useMemo(() => {
+    const configKeys = new Set(Object.keys(goalsConfig || {}));
     const legacy = Object.entries(goalsConfig || {}).map(([gid, g]) =>
       legacyToV4(gid, g, corpusData)
     );
-    const active = extraGoals.filter(g => g.status === GOAL_STATUSES.ACTIVE);
-    return [...legacy, ...active];
+    const extras = extraGoals
+      .filter(g => g.status === GOAL_STATUSES.ACTIVE && !configKeys.has(g.id));
+    return [...legacy, ...extras];
   }, [goalsConfig, corpusData, extraGoals]);
 
   // Compute health for all goals

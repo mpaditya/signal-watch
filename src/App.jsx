@@ -128,9 +128,17 @@ function synthesise(fund,m,goalsConfig,marketPE,avgDays,dipPct){
         detail=`Fund is ${m.fromAvg.toFixed(1)}% above ${avgDays}d avg. Strong momentum — stay invested but don't chase.`
       }
     } else {
-      conviction='hold'
-      action=`Continue SIP (₹${sipAmt.toLocaleString('en-IN')}/mo on ${sipDate}th). No action needed.`
-      detail=`NAV is ${m.fromAvg>=0?'+':''}${m.fromAvg.toFixed(1)}% vs ${avgDays}d avg — within normal range.`
+      // Neutral/stable signal — but still check if goal horizon demands derisking
+      if(ctx.dipMultiplier===0){
+        // Short/imminent horizon: equity exposure is the problem, not the signal
+        conviction='avoid'
+        action=ctx.dipAction
+        detail=`Goal is ${gc.yearsLeft}Y away — you should not have equity exposure this close to your target. Move to debt/liquid regardless of market signals.`
+      } else {
+        conviction='hold'
+        action=`Continue SIP (₹${sipAmt.toLocaleString('en-IN')}/mo on ${sipDate}th). No action needed.`
+        detail=`NAV is ${m.fromAvg>=0?'+':''}${m.fromAvg.toFixed(1)}% vs ${avgDays}d avg — within normal range.`
+      }
     }
 
     const drawdownNote=drawdownFrom52!=null&&drawdownFrom52<-20
