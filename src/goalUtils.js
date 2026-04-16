@@ -850,3 +850,193 @@ export function validateGoal(goal) {
 
 // ─── Export all goal types as an ordered array for the form ────────
 export const GOAL_TYPE_OPTIONS = Object.values(GOAL_TYPES);
+
+// ─── Dip Prioritisation: Conviction Scoring (SW-3) ───────────────
+// When multiple funds show "Buy Dip" signals simultaneously and the user
+// has a lump sum to deploy, we need to rank them by conviction — i.e.,
+// which dip is most worth buying into right now?
+//
+// The score is a weighted composite of 5 factors on a 0–100 scale.
+// Each factor captures a different dimension of the investment opportunity:
+//
+//   Factor             Weight   Why it matters
+//   ──────────────     ──────   ─────────────────────────────────────────
+//   Dip Depth          30%      Deeper dip = better entry price relative to recent avg
+//   Market P/E         20%      Cheap overall market = higher probability of recovery
+//   Drawdown from 52W  15%      Deep drawdown from peak = mean reversion opportunity
+//   Goal Horizon       20%      Longer horizon = more time to recover if dip continues
+//   Goal Health        15%      Off-track goals need the capital more urgently
+//
+// IMPORTANT EXCLUSIONS:
+// - Emergency fund goals ALWAYS get score 0 (no equity ever — Brief §4.2)
+// - Goals with < 2 years remaining get score 0 (capital preservation zone)
+// - Arbitrage/debt funds are excluded upstream (only equity dips are scored)
+
+/**
+ * Score a single fund–goal pair for dip conviction.
+ *
+ * Think of this like a "should I buy this dip?" scorecard.
+ * Higher score = stronger case for deploying lump sum into this fund for this goal.
+ *
+ * @param {object} params
+ * @param {number} params.dipPercent      - How far below rolling avg (positive number, e.g. 8.2 for -8.2%)
+ * @param {number} params.marketPE        - Current P/E ratio for the fund's index (e.g. 22.5)
+ * @param {number} params.drawdownPercent - How far below 52-week high (positive number, e.g. 15 for -15%)
+ * @param {number} params.yearsLeft       - Years remaining to goal target date
+ * @param {number} params.onTrackPct      - Goal health: how on-track the goal is (0–200%)
+ * @param {string} params.goalType        - One of the 7 goal types (car, house, etc.)
+ * @returns {number} Conviction score 0–100 (0 = do not invest, 100 = maximum conviction)
+ */
+export function computeConvictionScore({
+  dipPercent,
+  marketPE,
+  drawdownPercent,
+  yearsLeft,
+  onTrackPct,
+  goalType,
+}) {
+  // ── HARD EXCLUSIONS ──────────────────────────────────────────────
+  // Emergency funds must NEVER hold equity (Brief §4.2, GOAL_TYPES.emergency).
+  // This is a non-negotiable financial safety rule.
+  if (goalType === 'emergency') return 0;
+
+  // Goals within 2 years of target are in the "capital preservation" zone.
+  // Buying equity dips this close to the deadline risks permanent loss
+  // of capital right when the money is needed. (See goalContext() in App.jsx
+  // where dipMultiplier=0 for yearsLeft<=2.)
+  if (yearsLeft < 2) return 0;
+
+  // ── FACTOR 1: DIP DEPTH (30% weight) ────────────────────────────
+  // Deeper dips = better entry price. A fund that's 10% below its rolling
+  // average is a stronger signal than one that's 3% below.
+  // We cap at 15% because beyond that, the dip might signal fundamental
+  // problems rather than a buying opportunity. Linear scale 0–100.
+  const MAX_DIP_THRESHOLD = 15; // percent below rolling average
+  const dipScore = Math.min((Math.abs(dipPercent) / MAX_DIP_THRESHOLD) * 100, 100);
+
+  // ── FACTOR 2: MARKET P/E CONTEXT (20% weight) ──────────────────
+  // P/E ratio tells us whether the broad market is cheap or expensive.
+  // When the whole market is cheap (low P/E), dips are more likely to
+  // recover — you're buying at a structurally good valuation.
+  // When expensive (high P/E), even a dipped fund might fall further.
+  //
+  // Thresholds are for Nifty 50 (largecap). Small/mid-cap P/E ratios
+  // are passed in already adjusted by the caller from PE_BANDS.
+  // Using simple cutoffs rather than the per-index bands here because
+  // the conviction score needs a single comparable scale across all funds.
+  let peScore;
+  if (marketPE == null) {
+    // No P/E data available — use neutral score (don't penalise or boost)
+    peScore = 50;
+  } else if (marketPE < 18) {
+    // Cheap market: high confidence that dips will recover
+    peScore = 100;
+  } else if (marketPE <= 22) {
+    // Fair value: moderate confidence
+    peScore = 60;
+  } else {
+    // Expensive market: low confidence — dips may deepen
+    peScore = 20;
+  }
+
+  // ── FACTOR 3: DRAWDOWN FROM 52-WEEK HIGH (15% weight) ──────────
+  // A fund that's 20% below its 52-week high represents a bigger discount
+  // than one that's only 5% off. This captures the "how cheap is it relative
+  // to its recent peak?" dimension.
+  // Capped at 30% because beyond that, something structural may be wrong.
+  const MAX_DRAWDOWN_THRESHOLD = 30; // percent below 52W high
+  const drawdownScore = Math.min(
+    (Math.abs(drawdownPercent || 0) / MAX_DRAWDOWN_THRESHOLD) * 100,
+    100
+  );
+
+  // ── FACTOR 4: GOAL HORIZON (20% weight) ─────────────────────────
+  // Longer horizon = more time for equity to recover from short-term dips.
+  // A retirement goal 22 years away can afford aggressive dip-buying.
+  // A car goal 3 years away should be cautious — less time to recover.
+  //
+  // Score tiers match the goalContext() horizon bands in App.jsx:
+  //   >15Y = 100 (long term, aggressive)
+  //   10-15Y = 80 (long term, moderate)
+  //   5-10Y = 50 (medium term, selective)
+  //   2-5Y = 20 (short term, cautious)
+  //   <2Y = 0 (already excluded above)
+  let horizonScore;
+  if (yearsLeft > 15) horizonScore = 100;
+  else if (yearsLeft > 10) horizonScore = 80;
+  else if (yearsLeft > 5) horizonScore = 50;
+  else horizonScore = 20; // 2-5 years
+
+  // ── FACTOR 5: GOAL HEALTH (15% weight) ──────────────────────────
+  // Off-track (red/amber) goals benefit MORE from a well-timed lump sum
+  // because they need extra capital to catch up to their target.
+  // On-track (green) goals still benefit, but with less urgency.
+  //
+  // This creates a "triage" effect: when you have limited lump sum,
+  // direct it toward the goal that needs it most.
+  let healthScore;
+  if (onTrackPct < 70) {
+    // Red: critically off-track — needs capital urgently
+    healthScore = 100;
+  } else if (onTrackPct < 90) {
+    // Amber: needs attention — lump sum would help significantly
+    healthScore = 70;
+  } else {
+    // Green: on-track — lump sum is a bonus, not a necessity
+    healthScore = 30;
+  }
+
+  // ── WEIGHTED COMPOSITE ──────────────────────────────────────────
+  // Weights sum to 1.0. Chosen to prioritise signal quality (dip depth)
+  // while ensuring goal context shapes the recommendation.
+  const score =
+    dipScore * 0.30 +
+    peScore * 0.20 +
+    drawdownScore * 0.15 +
+    horizonScore * 0.20 +
+    healthScore * 0.15;
+
+  // Round to 1 decimal place for clean display
+  return Math.round(score * 10) / 10;
+}
+
+/**
+ * Allocate a lump sum across multiple fund–goal pairs proportionally
+ * to their conviction scores.
+ *
+ * The logic is simple: each entry gets a share of the total proportional
+ * to its conviction score. If only one fund has a Buy Dip signal, it gets
+ * 100% of the lump sum.
+ *
+ * Amounts are rounded to nearest ₹500 for practical SIP/lump-sum amounts
+ * (most Indian fund platforms use ₹500 increments).
+ *
+ * @param {Array<{score: number, fundId: string, goalId: string}>} scoredEntries
+ * @param {number} totalLumpSum - Total available amount in INR
+ * @returns {Array<{...entry, suggestedAmount: number}>} Entries with suggested amounts
+ */
+export function allocateLumpSum(scoredEntries, totalLumpSum) {
+  // Filter out zero-score entries (emergency, imminent goals, etc.)
+  const eligible = scoredEntries.filter(e => e.score > 0);
+  if (eligible.length === 0 || totalLumpSum <= 0) return [];
+
+  const totalScore = eligible.reduce((sum, e) => sum + e.score, 0);
+
+  // Allocate proportionally, round to ₹500, track remainder for correction
+  let allocated = eligible.map(entry => ({
+    ...entry,
+    suggestedAmount: Math.round((entry.score / totalScore) * totalLumpSum / 500) * 500,
+  }));
+
+  // Correct rounding errors: ensure total allocated = total lump sum.
+  // Add/subtract the difference to the highest-conviction entry.
+  const totalAllocated = allocated.reduce((sum, e) => sum + e.suggestedAmount, 0);
+  const diff = totalLumpSum - totalAllocated;
+  if (diff !== 0 && allocated.length > 0) {
+    // Sort by score descending, adjust the top entry
+    allocated.sort((a, b) => b.score - a.score);
+    allocated[0].suggestedAmount += diff;
+  }
+
+  return allocated;
+}

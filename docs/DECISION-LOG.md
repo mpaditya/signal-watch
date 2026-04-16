@@ -94,6 +94,8 @@ Entries are chronological. New decisions appended at the bottom. Decisions added
 
 | \*\*DEC-033\*\* | Apr 16, 2026 | \*\*Architecture\*\* | \*\*peaceiris/actions-gh-pages@v4 for GitHub Pages deployment\*\* | Executing DEC-023 (GitHub Pages over Netlify). Needed a deploy action for the CI pipeline. | peaceiris/actions-gh-pages@v4 (10K+ stars, most popular), JamesIves/github-pages-deploy-action, manual gh-pages push script. | Chose peaceiris — most widely used GH Pages deploy action. Triggers on push to main, runs npm ci + npm run build, deploys dist/ to gh-pages branch. Added SPA routing fix via public/404.html redirect pattern. Vite base set to /signal-watch/ for correct asset paths. | \*\*Implemented\*\* |
 
+| \*\*DEC-034\*\* | Apr 16, 2026 | \*\*Financial Rule\*\* | \*\*Conviction scoring: 5-factor weighted model for dip prioritisation\*\* | When multiple funds show Buy Dip simultaneously, user needs guidance on where to deploy a lump sum. Need a systematic scoring model, not ad-hoc gut feel. | Single-factor ranking (dip depth only), Equal allocation across all dips, Multi-factor weighted model. | 5-factor weighted model: dip depth 30%, market P/E 20%, drawdown from 52W high 15%, goal horizon 20%, goal health 15%. Weights chosen to prioritise signal quality (dip depth) while ensuring goal context shapes the recommendation. Emergency funds excluded from equity dips entirely (score=0). Goals <2Y also excluded (capital preservation). Suggested amounts proportional to scores, rounded to ₹500. | \*\*Implemented\*\* |
+
 
 
 \# How to Use This Document

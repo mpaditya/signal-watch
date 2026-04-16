@@ -127,7 +127,7 @@ function inferType(goalId, label) {
 }
 
 // ─── Component ─────────────────────────────────────────────────────
-export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig }) {
+export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig, onHealthUpdate }) {
   const [corpusData, setCorpusData] = useState(() => loadCorpusData());
   const [extraGoals, setExtraGoals] = useState(() => loadExtraGoals());
   const [formOpen, setFormOpen] = useState(false);
@@ -155,6 +155,13 @@ export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig 
     }
     return map;
   }, [allGoals]);
+
+  // SW-3: Propagate healthMap to parent (App.jsx) for DipPrioritisation component.
+  // This avoids duplicating the health computation logic — GoalDashboard owns the
+  // health engine, and passes results up for the conviction scorer to use.
+  useEffect(() => {
+    if (onHealthUpdate) onHealthUpdate(healthMap);
+  }, [healthMap, onHealthUpdate]);
 
   // Summary stats
   const summary = useMemo(() => {

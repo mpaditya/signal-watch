@@ -310,6 +310,128 @@ console.log('\nCross-Validation (Lever Consistency):');
   }
 }
 
+// ── Conviction Scoring (SW-3) ───────────────────────────────────
+// These tests validate the 5-factor weighted scoring model for dip prioritisation.
+// The scoring function lives in goalUtils.js — copied here for standalone testing.
+
+function computeConvictionScore({ dipPercent, marketPE, drawdownPercent, yearsLeft, onTrackPct, goalType }) {
+  // Emergency funds: no equity ever
+  if (goalType === 'emergency') return 0;
+  // Goals < 2Y: capital preservation zone
+  if (yearsLeft < 2) return 0;
+
+  const MAX_DIP_THRESHOLD = 15;
+  const dipScore = Math.min((Math.abs(dipPercent) / MAX_DIP_THRESHOLD) * 100, 100);
+
+  let peScore;
+  if (marketPE == null) peScore = 50;
+  else if (marketPE < 18) peScore = 100;
+  else if (marketPE <= 22) peScore = 60;
+  else peScore = 20;
+
+  const MAX_DRAWDOWN_THRESHOLD = 30;
+  const drawdownScore = Math.min((Math.abs(drawdownPercent || 0) / MAX_DRAWDOWN_THRESHOLD) * 100, 100);
+
+  let horizonScore;
+  if (yearsLeft > 15) horizonScore = 100;
+  else if (yearsLeft > 10) horizonScore = 80;
+  else if (yearsLeft > 5) horizonScore = 50;
+  else horizonScore = 20;
+
+  let healthScore;
+  if (onTrackPct < 70) healthScore = 100;
+  else if (onTrackPct < 90) healthScore = 70;
+  else healthScore = 30;
+
+  const score = dipScore * 0.30 + peScore * 0.20 + drawdownScore * 0.15 + horizonScore * 0.20 + healthScore * 0.15;
+  return Math.round(score * 10) / 10;
+}
+
+function allocateLumpSum(scoredEntries, totalLumpSum) {
+  const eligible = scoredEntries.filter(e => e.score > 0);
+  if (eligible.length === 0 || totalLumpSum <= 0) return [];
+  const totalScore = eligible.reduce((sum, e) => sum + e.score, 0);
+  let allocated = eligible.map(entry => ({
+    ...entry,
+    suggestedAmount: Math.round((entry.score / totalScore) * totalLumpSum / 500) * 500,
+  }));
+  const totalAllocated = allocated.reduce((sum, e) => sum + e.suggestedAmount, 0);
+  const diff = totalLumpSum - totalAllocated;
+  if (diff !== 0 && allocated.length > 0) {
+    allocated.sort((a, b) => b.score - a.score);
+    allocated[0].suggestedAmount += diff;
+  }
+  return allocated;
+}
+
+console.log('\nConviction Scoring (SW-3):');
+{
+  // Test 1: Deeper dips should produce higher scores (all else equal)
+  const shallow = computeConvictionScore({ dipPercent: 3, marketPE: 20, drawdownPercent: 10, yearsLeft: 20, onTrackPct: 85, goalType: 'retirement' });
+  const deep = computeConvictionScore({ dipPercent: 12, marketPE: 20, drawdownPercent: 10, yearsLeft: 20, onTrackPct: 85, goalType: 'retirement' });
+  assert(deep > shallow, `Deeper dip (12%) scores higher (${deep}) than shallow dip (3%) (${shallow})`);
+
+  // Test 2: Emergency fund goals ALWAYS get 0 — no equity ever (Brief §4.2)
+  const emergency = computeConvictionScore({ dipPercent: 10, marketPE: 15, drawdownPercent: 20, yearsLeft: 10, onTrackPct: 50, goalType: 'emergency' });
+  assert(emergency === 0, 'Emergency fund goal → 0 conviction (no equity ever)');
+
+  // Test 3: Imminent goals (< 2Y) always get 0 — capital preservation
+  const imminent = computeConvictionScore({ dipPercent: 10, marketPE: 15, drawdownPercent: 20, yearsLeft: 1.5, onTrackPct: 50, goalType: 'car' });
+  assert(imminent === 0, 'Imminent goal (<2Y) → 0 conviction (capital preservation)');
+
+  // Test 4: Long horizon + cheap market should produce highest scores
+  const bestCase = computeConvictionScore({ dipPercent: 15, marketPE: 16, drawdownPercent: 25, yearsLeft: 22, onTrackPct: 60, goalType: 'retirement' });
+  assert(bestCase >= 80, `Best case (deep dip + cheap + long + off-track) scores ≥80: got ${bestCase}`);
+
+  // Test 5: Short horizon + expensive market should produce low (but non-zero) scores
+  const worstNonZero = computeConvictionScore({ dipPercent: 3, marketPE: 30, drawdownPercent: 2, yearsLeft: 3, onTrackPct: 95, goalType: 'car' });
+  assert(worstNonZero > 0 && worstNonZero < 30, `Worst viable case scores low: got ${worstNonZero}`);
+
+  // Test 6: Cheap market scores higher than expensive market (all else equal)
+  const cheap = computeConvictionScore({ dipPercent: 8, marketPE: 16, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 80, goalType: 'retirement' });
+  const expensive = computeConvictionScore({ dipPercent: 8, marketPE: 30, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 80, goalType: 'retirement' });
+  assert(cheap > expensive, `Cheap market (${cheap}) scores higher than expensive (${expensive})`);
+
+  // Test 7: Off-track goal scores higher than on-track goal (all else equal)
+  const offTrack = computeConvictionScore({ dipPercent: 8, marketPE: 20, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 60, goalType: 'retirement' });
+  const onTrack = computeConvictionScore({ dipPercent: 8, marketPE: 20, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 95, goalType: 'retirement' });
+  assert(offTrack > onTrack, `Off-track goal (${offTrack}) scores higher than on-track (${onTrack})`);
+}
+
+console.log('\nLump Sum Allocation (SW-3):');
+{
+  // Test 8: Suggested amounts should sum to the entered lump sum
+  const entries = [
+    { fundId: 'a', goalId: 'g1', score: 80 },
+    { fundId: 'b', goalId: 'g2', score: 40 },
+    { fundId: 'c', goalId: 'g3', score: 20 },
+  ];
+  const allocated = allocateLumpSum(entries, 100000);
+  const totalAllocated = allocated.reduce((sum, e) => sum + e.suggestedAmount, 0);
+  assert(totalAllocated === 100000, `Allocations sum to lump sum: ${totalAllocated} === 100000`);
+
+  // Test 9: Higher score gets larger allocation
+  const highest = allocated.find(e => e.fundId === 'a');
+  const lowest = allocated.find(e => e.fundId === 'c');
+  assert(highest.suggestedAmount > lowest.suggestedAmount, `Highest score (${highest.suggestedAmount}) gets more than lowest (${lowest.suggestedAmount})`);
+
+  // Test 10: Single fund with dip signal gets 100% of lump sum
+  const single = allocateLumpSum([{ fundId: 'x', goalId: 'g1', score: 75 }], 50000);
+  assert(single.length === 1 && single[0].suggestedAmount === 50000, `Single dip fund gets 100% of lump sum: ${single[0]?.suggestedAmount}`);
+
+  // Test 11: Zero-score entries are excluded from allocation
+  const withZero = allocateLumpSum([
+    { fundId: 'a', goalId: 'g1', score: 60 },
+    { fundId: 'b', goalId: 'g2', score: 0 }, // emergency or imminent
+  ], 50000);
+  assert(withZero.length === 1, `Zero-score entries excluded: ${withZero.length} eligible`);
+  assert(withZero[0].suggestedAmount === 50000, 'Non-zero entry gets full amount when others are zero');
+
+  // Test 12: Empty entries or zero lump sum returns empty
+  assert(allocateLumpSum([], 100000).length === 0, 'No entries → empty allocation');
+  assert(allocateLumpSum(entries, 0).length === 0, 'Zero lump sum → empty allocation');
+}
+
 // ── Summary ─────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -39,7 +39,7 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SIGNAL WATCH ENHANCEMENTS** |
 | **SW-1** | **Dynamic add/delete goals** | **P0 — Now** | **DONE** | 1 | Apr 26 | Apr 26 | S1 | 7 goal types, CRUD, corpus tracking, off-track engine. Shipped Apr 2026. |
 | **SW-2** | **Start date + corpus tracking** | **P0 — Now** | **DONE** | 1 | Apr 26 | Apr 26 | S1 | Projections, health scoring, staleness nudges, off-track levers. Shipped Apr 2026. |
-| **SW-3** | **Dip prioritisation + funds** | **P0 — Now** | **Not Started** | 1 | — | — | S1 | User enters lump sum. App ranks Buy Dip signals by conviction score. |
+| **SW-3** | **Dip prioritisation + funds** | **P0 — Now** | **DONE** | 1 | Apr 26 | Apr 16, 2026 | S1 | 5-factor conviction scoring (dip depth, P/E, drawdown, horizon, health). Lump sum allocation ranked table. 12 new unit tests. DEC-034 added. |
 | **SW-4** | **In-app chat panel** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | Lightweight chat: “why this signal?” First Claude API tool-use integration. MUST use multi-LLM abstraction (AR-5) and validation layer (SE-5). |
 | **SW-5** | **Category comparison** | **P2 — Soon** | **Not Started** | 1 | — | — | — | Compare 1M/3M return vs category average. |
 | **SW-6** | **Goal type-specific glide path** | **P2 — Soon** | **Not Started** | 1 | — | — | — | Different derisking per goal type. Equity cutoff per Brief §4.2. |

@@ -1,4 +1,5 @@
 import GoalDashboard from './components/GoalDashboard';
+import DipPrioritisation from './components/DipPrioritisation';
 import{useState,useEffect,useMemo,useCallback}from'react'
 import{LineChart,Line,ResponsiveContainer,Tooltip}from'recharts'
 
@@ -46,12 +47,20 @@ const DEFAULT_GOALS={
 }
 
 const STORAGE_KEY='artha_config_v1'
+// SW-3: Lump sum amount persisted to localStorage so user doesn't re-enter each visit
+const LUMP_SUM_STORAGE_KEY='artha_lump_sum'
 
 function loadConfig(){
   try{const s=localStorage.getItem(STORAGE_KEY);return s?JSON.parse(s):DEFAULT_GOALS}catch{return DEFAULT_GOALS}
 }
 function saveConfig(cfg){
   try{localStorage.setItem(STORAGE_KEY,JSON.stringify(cfg))}catch{}
+}
+function loadLumpSum(){
+  try{return parseFloat(localStorage.getItem(LUMP_SUM_STORAGE_KEY))||0}catch{return 0}
+}
+function saveLumpSum(val){
+  try{localStorage.setItem(LUMP_SUM_STORAGE_KEY,JSON.stringify(val))}catch{}
 }
 
 const fmtINR=n=>`₹${parseFloat(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`
@@ -356,11 +365,18 @@ export default function App(){
   const[rulesOpen,setRulesOpen]=useState(false)
   const[goalsOpen,setGoalsOpen]=useState(false)
   const[goalsConfig,setGoalsConfig]=useState(()=>loadConfig())
+  const[lumpSum,setLumpSum]=useState(()=>loadLumpSum())
   const[marketPE,setMarketPE]=useState({})
+  // SW-3: healthMap is populated by GoalDashboard and passed to DipPrioritisation.
+  // This lets the conviction scorer know which goals are on-track/off-track
+  // without duplicating the health computation logic here.
+  const[healthMap,setHealthMap]=useState({})
   const[peStatus,setPeStatus]=useState('idle')
 
   // Persist config to localStorage whenever it changes
   useEffect(()=>saveConfig(goalsConfig),[goalsConfig])
+  // SW-3: Persist lump sum to localStorage so it survives page reloads
+  useEffect(()=>saveLumpSum(lumpSum),[lumpSum])
 
   const updateGoalField=(gid,field,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],[field]:['yearsLeft','targetLakh'].includes(field)?Number(val):val}}))
   const updateFundSIP=(gid,fid,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],funds:{...p[gid].funds,[fid]:Number(val)}}}))
@@ -493,6 +509,16 @@ export default function App(){
             style={{display:'flex',alignItems:'center',gap:6,padding:'5px 13px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:'var(--bg)',fontSize:12,color:'var(--text-secondary)'}}>
             ↻ Refresh P/E
           </button>
+          {/* SW-3: Lump sum input — user enters available amount to deploy across Buy Dip signals.
+              Persisted in localStorage so it survives page reloads. When non-zero, the
+              DipPrioritisation component appears below with ranked allocation suggestions. */}
+          <div style={{display:'flex',alignItems:'center',gap:4,padding:'3px 4px 3px 11px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:lumpSum>0?'var(--bg-secondary)':'var(--bg)'}}>
+            <span style={{fontSize:11,color:'var(--text-secondary)'}}>💰 Lump sum ₹</span>
+            <input type="number" min="0" step="5000" value={lumpSum||''} placeholder="0"
+              onChange={e=>setLumpSum(Math.max(0,parseInt(e.target.value)||0))}
+              style={{width:72,padding:'3px 6px',border:'none',borderRadius:99,fontSize:12,fontWeight:500,background:'transparent',color:'var(--text-primary)',outline:'none',textAlign:'right'}}/>
+            {lumpSum>0&&<button onClick={()=>setLumpSum(0)} style={{border:'none',background:'none',fontSize:11,color:'var(--text-tertiary)',cursor:'pointer',padding:'0 4px'}}>✕</button>}
+          </div>
         </div>
 
         {goalsOpen&&(
@@ -569,6 +595,18 @@ export default function App(){
           </div>
         )}
 
+        {/* SW-3: Dip Prioritisation panel — appears when user has entered a lump sum.
+            Ranks all Buy Dip fund–goal pairs by conviction score and suggests allocation.
+            Positioned above fund cards so the user sees the recommendation first. */}
+        <DipPrioritisation
+          lumpSum={lumpSum}
+          funds={FUNDS}
+          metrics={metrics}
+          goalsConfig={goalsConfig}
+          marketPE={marketPE}
+          healthMap={healthMap}
+        />
+
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:12}}>
           {visible.map(fund=>(
             <Card key={fund.id} fund={fund} status={st[fund.id]||'loading'} m={metrics[fund.id]} data={fd[fund.id]}
@@ -577,7 +615,7 @@ export default function App(){
           ))}
         </div>
 
-        <GoalDashboard goalsConfig={goalsConfig} funds={FUNDS} onUpdateGoalsConfig={setGoalsConfig} />
+        <GoalDashboard goalsConfig={goalsConfig} funds={FUNDS} onUpdateGoalsConfig={setGoalsConfig} onHealthUpdate={setHealthMap} />
       </main>
 
       <footer style={{padding:'1rem 1.5rem',marginTop:'1rem',borderTop:bs,textAlign:'center',fontSize:10,color:'var(--text-tertiary)',lineHeight:1.7}}>
