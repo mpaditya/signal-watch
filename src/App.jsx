@@ -77,7 +77,14 @@ function goalContext(yearsLeft){
 function synthesise(fund,m,goalsConfig,marketPE,avgDays,dipPct){
   if(!m||fund.category==='Arbitrage')return null
   const verdicts=[]
-  fund.goals.forEach(gid=>{
+  // Collect all goal IDs this fund belongs to:
+  // 1. From fund.goals (hardcoded legacy mapping)
+  // 2. From goalsConfig entries where funds[fund.id] exists (new goals)
+  const goalIds=new Set(fund.goals)
+  Object.entries(goalsConfig).forEach(([gid,gc])=>{
+    if(gc.funds?.[fund.id]!==undefined && gc.funds[fund.id]>0)goalIds.add(gid)
+  })
+  goalIds.forEach(gid=>{
     const gc=goalsConfig[gid]
     if(!gc)return
     const ctx=goalContext(gc.yearsLeft)
@@ -237,7 +244,7 @@ function Card({fund,status,m,data,isSel,avgDays,dipPct,goalsConfig,marketPE,onSe
           <span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:cs.bg,color:cs.text,fontWeight:500}}>{fund.category}</span>
           <div style={{fontSize:13,fontWeight:500,marginTop:5,lineHeight:1.3}}>{fund.name}</div>
           <div style={{fontSize:10,color:'var(--text-secondary)',marginTop:2}}>
-            {fund.goals.map(g=>goalsConfig[g]?`${goalsConfig[g].emoji} ${goalsConfig[g].yearsLeft}Y`:g).join(' · ')}
+            {[...new Set([...fund.goals,...Object.entries(goalsConfig).filter(([gid,gc])=>gc.funds?.[fund.id]>0).map(([gid])=>gid)])].map(g=>goalsConfig[g]?`${goalsConfig[g].emoji} ${goalsConfig[g].yearsLeft}Y`:g).join(' · ')}
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
@@ -406,7 +413,14 @@ export default function App(){
     return m
   },[fd,avgDays,dipPct])
 
-  const visible=goal==='all'?FUNDS:FUNDS.filter(f=>f.goals.includes(goal))
+  // For new goals, fund-to-goal mapping is in goalsConfig[gid].funds (keys are fund IDs).
+  // For legacy goals, mapping is in FUNDS[].goals. Check both directions.
+  const fundBelongsToGoal=(fund,gid)=>{
+    if(fund.goals.includes(gid))return true
+    const gc=goalsConfig[gid]
+    return gc?.funds?.[fund.id]!==undefined && gc.funds[fund.id]>0
+  }
+  const visible=goal==='all'?FUNDS:FUNDS.filter(f=>fundBelongsToGoal(f,goal))
   const done=FUNDS.filter(f=>st[f.id]==='done')
   const sigCount=done.reduce((acc,f)=>{const s=metrics[f.id]?.signal;if(s)acc[s.id]=(acc[s.id]||0)+1;return acc},{})
   const bs='0.5px solid var(--border)'
@@ -450,7 +464,7 @@ export default function App(){
 
       <main style={{maxWidth:960,margin:'0 auto',padding:'1.25rem 1.5rem'}}>
         <div style={{display:'flex',gap:0,borderBottom:bs,marginBottom:14}}>
-          {[{id:'all',label:'All Funds',n:FUNDS.length},{id:'retirement',label:'Retirement',n:FUNDS.filter(f=>f.goals.includes('retirement')).length},{id:'education',label:'Education',n:FUNDS.filter(f=>f.goals.includes('education')).length}].map(t=>(
+          {[{id:'all',label:'All Funds',n:FUNDS.length},...Object.entries(goalsConfig).map(([gid,g])=>({id:gid,label:g.label,n:FUNDS.filter(f=>fundBelongsToGoal(f,gid)).length}))].map(t=>(
             <button key={t.id} onClick={()=>{setGoal(t.id);setSel(null)}}
               style={{padding:'7px 14px',border:'none',background:'none',fontSize:13,color:goal===t.id?'var(--text-primary)':'var(--text-secondary)',fontWeight:goal===t.id?500:400,borderBottom:goal===t.id?'2px solid var(--text-primary)':'2px solid transparent',marginBottom:-0.5,cursor:'pointer'}}>
               {t.label} <span style={{fontSize:10,opacity:.55}}>({t.n})</span>

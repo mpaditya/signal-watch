@@ -211,7 +211,18 @@ export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig 
       setCorpusData(updated);
       saveCorpusData(updated);
 
-      // Sync yearsLeft, targetLakh, label, emoji back to main goalsConfig
+      // Convert v4 funds back to legacy format and sync everything
+      // v4: { fid: { monthlySIP, sipDate, alertEnabled } }
+      // legacy: funds: { fid: amount }, sipDates: { fid: date }
+      const legacyFunds = {};
+      const legacySipDates = {};
+      if (goal.funds) {
+        for (const [fid, fdata] of Object.entries(goal.funds)) {
+          legacyFunds[fid] = fdata.monthlySIP || 0;
+          legacySipDates[fid] = fdata.sipDate || 1;
+        }
+      }
+
       if (onUpdateGoalsConfig) {
         onUpdateGoalsConfig(prev => ({
           ...prev,
@@ -221,11 +232,13 @@ export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig 
             targetLakh: goal.targetLakh,
             label: goal.label,
             emoji: goal.emoji,
+            funds: legacyFunds,
+            sipDates: legacySipDates,
           },
         }));
       }
     } else {
-      // New/extra goal
+      // New goal: save to extra goals storage for health dashboard
       setExtraGoals(prev => {
         const idx = prev.findIndex(g => g.id === goal.id);
         let next;
@@ -238,6 +251,45 @@ export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig 
         saveExtraGoals(next);
         return next;
       });
+
+      // ALSO inject into goalsConfig in legacy format so the signal/verdict
+      // system, header pills, goals panel, and filter tabs all pick it up.
+      // Convert v4 funds → legacy funds + sipDates
+      const legacyFunds = {};
+      const legacySipDates = {};
+      if (goal.funds) {
+        for (const [fid, fdata] of Object.entries(goal.funds)) {
+          legacyFunds[fid] = fdata.monthlySIP || 0;
+          legacySipDates[fid] = fdata.sipDate || 1;
+        }
+      }
+
+      // Store corpus + CAGR in separate storage (same as legacy goals)
+      const updatedCorpus = {
+        ...corpusData,
+        [goal.id]: {
+          ...corpusData[goal.id],
+          amount: goal.currentCorpus || 0,
+          updatedAt: goal.corpusUpdatedAt || new Date().toISOString().slice(0, 10),
+          assumedCAGR: goal.assumedCAGR,
+        },
+      };
+      setCorpusData(updatedCorpus);
+      saveCorpusData(updatedCorpus);
+
+      if (onUpdateGoalsConfig) {
+        onUpdateGoalsConfig(prev => ({
+          ...prev,
+          [goal.id]: {
+            label: goal.label,
+            emoji: goal.emoji,
+            yearsLeft: goal.totalYears,
+            targetLakh: goal.targetLakh,
+            funds: legacyFunds,
+            sipDates: legacySipDates,
+          },
+        }));
+      }
     }
     setEditingGoal(null);
     setFormOpen(false);
