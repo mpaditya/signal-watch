@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Signal Watch — Project Artha</title>
+  <!--
+    GitHub Pages SPA routing fix:
+    When someone navigates directly to a deep URL (e.g., /signal-watch/goals),
+    GitHub Pages doesn't find a matching file and serves this 404.html instead.
+    This script redirects to index.html with the original path preserved as a
+    query parameter, so the SPA can handle routing client-side.
+
+    Based on: https://github.com/rafgraph/spa-github-pages
+  -->
+  <script>
+    // Redirect to index.html preserving the path.
+    // The single-page app's router will handle the route from there.
+    var pathSegmentsToKeep = 1; // '/signal-watch' is one segment
+    var l = window.location;
+    l.replace(
+      l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
+      l.pathname.split('/').slice(0, 1 + pathSegmentsToKeep).join('/') + '/?/' +
+      l.pathname.slice(1).split('/').slice(pathSegmentsToKeep).join('/').replace(/&/g, '~and~') +
+      (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
+      l.hash
+    );
+  </script>
+</head>
+<body></body>
+</html>
