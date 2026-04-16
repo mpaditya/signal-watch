@@ -1,0 +1,46 @@
+# Deploy to GitHub Pages on every push to main.
+# Uses peaceiris/actions-gh-pages@v4 (10K+ stars, most widely used GH Pages action).
+# Builds the Vite app and pushes dist/ to the gh-pages branch.
+# GitHub Pages then serves from that branch at mpaditya.github.io/signal-watch/
+#
+# Decision: DEC-033 — chose this over Netlify due to unlimited free builds.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+
+# Only allow one deployment at a time to avoid race conditions
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          # Only deploy from main branch (safety check)
+          publish_branch: gh-pages
