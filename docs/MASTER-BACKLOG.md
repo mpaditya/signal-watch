@@ -26,7 +26,7 @@ Master Backlog  |  v5  |  April 2026  |  Owner: mpaditya  |  Status: Active Deve
 
 ## Backlog Summary
 
-P0 (Now): 2 items  |  P1 (Next): 7 items  |  P2 (Soon): 11 items  |  P3 (Later): 12 items  |  P4 (Future): 6 items  |  DONE: 3 items  |  Total: 41 items
+P0 (Now): 3 items  |  P1 (Next): 9 items  |  P2 (Soon): 11 items  |  P3 (Later): 12 items  |  P4 (Future): 6 items  |  DONE: 3 items  |  Total: 44 items
 
 Current focus: AR-7 GitHub Pages migration + SW-3 Dip prioritisation.
 
@@ -46,6 +46,7 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SW-7** | **NSE P/E multi-source fallback** | **P3 — Later** | **Not Started** | 1 | — | — | — | Try Screener.in, Trendlyne before estimated values. |
 | **SW-8** | **Email alert: per-signal toggle** | **P3 — Later** | **LIVE** | 1 | Mar 26 | Mar 26 | v3 | Per-fund mute is live. Consider per-signal-type toggles. |
 | **SW-9** | **Goal abandon/archive** | **P2 — Soon** | **Not Started** | 1 | — | — | S2 | Soft delete via status=abandoned. Hard delete deferred to AR-1. |
+| **SW-10** | **HashRouter for multi-page navigation** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | GitHub Pages returns 404 on direct URL navigation with BrowserRouter. Switch to HashRouter BEFORE adding chat panel or other routes. See Brief 3.5 friction #2. DEC-035. |
 | **ARCHITECTURE ****&**** INFRASTRUCTURE** |
 | **AR-1** | **Supabase migration (Postgres)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Free tier. Replaces localStorage. Adds signal_history + decisions tables. |
 | **AR-2** | **Authentication (magic link)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Email magic link via Supabase Auth. Required before cloud DB stores financial data. |
@@ -87,13 +88,15 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SE-5** | **LLM response validation layer** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | NEW: Every actionable LLM recommendation sanity-checked by deterministic rules. SIP caps, CAGR consistency, timeline/risk bounds. See DEC-026, Brief §6.3. |
 | **SE-6** | **Data minimisation for LLM prompts** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | NEW: Anonymise financial data before sending to LLM APIs. Prompt templates enforce no raw amounts, no fund names, no PII. See DEC-027, Brief §6.2. |
 | **SE-7** | **LLM traceability + tool-call audit** | **P2 — Soon** | **Not Started** | 2 | — | — | S3-4 | NEW: Log every LLM call: provider, model, prompt (post-anonymisation), response, tool calls I/O, latency, tokens, validation pass/fail. Console-log in S2, Supabase table in S3. |
+| **SE-8** | **Supabase keep-alive ping (GH Actions)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Supabase free tier pauses DB after 7 days inactivity. GH Actions cron pings DB + Edge Functions every 5 days. Build FIRST in Sprint 3 before any user-facing Supabase features. See Brief 3.5 friction #1 and #6. DEC-036. |
+| **SE-9** | **Pre-Sprint-2 readiness audit** | **P0 — Now** | **Not Started** | 1-2 | — | — | S1-2 | 30-min audit before Sprint 2. Verify: (1) router type — switch to HashRouter, (2) direct URL nav works, (3) npm run dev hot-reload works, (4) Supabase project set up. See Brief 3.5. |
 | **AR-10** | **Evaluate MCP server for tools** | **P3 — Later** | **Not Started** | 2-3 | — | — | — | NEW: After Supabase migration, evaluate building an MCP server to expose financial tools (goal projections, signal queries, portfolio calcs) for use by any MCP-compatible agent. |
 
 # Recommended Build Sequence
 
 - **Sprint 1 (Current):** AR-7 + SW-3 — GitHub Pages migration, then dip prioritisation. SW-1, SW-2 are DONE. AR-6 (CLAUDE.md) in progress.
 
-- **Sprint 2:** AR-5 + SE-5 + SE-6 + SW-4 + SW-9 + SE-1 — Multi-LLM layer, validation layer, data minimisation, in-app chat, goal abandon, graceful degradation. LLM safety infrastructure built BEFORE first LLM feature.
+- **Sprint 2:** SW-10 + AR-5 + SE-5 + SE-6 + SW-4 + SW-9 + SE-1 — HashRouter migration first, then multi-LLM layer, validation layer, data minimisation, in-app chat, goal abandon, graceful degradation. LLM safety infrastructure built BEFORE first LLM feature.
 
 - **Sprint 3:** AR-1 + AR-2 + AR-3 + AR-4 + SE-3 — Supabase migration, auth, signal history, decisions audit log, data export.
 
