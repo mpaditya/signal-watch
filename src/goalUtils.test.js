@@ -432,6 +432,145 @@ console.log('\nLump Sum Allocation (SW-3):');
   assert(allocateLumpSum(entries, 0).length === 0, 'Zero lump sum → empty allocation');
 }
 
+// ── Horizon Bucket & CAGR Suggestion (SW-1 enhancement) ──────────
+// Inline copies of the new goalUtils functions for standalone testing
+const CAGR_HORIZON_BUCKETS = [1, 3, 5, 7, 10, 15, 20];
+const CONSERVATIVE_CAGR_DISCOUNT = 0.5;
+const INDEX_HISTORICAL_CAGR = {
+  largecap:  { 1: 11,  3: 11,  5: 11.5, 7: 12,  10: 12,  15: 12.5, 20: 13  },
+  midcap:    { 1: 12,  3: 13,  5: 14,   7: 14.5, 10: 15,  15: 15,   20: 15  },
+  smallcap:  { 1: 11,  3: 13,  5: 13.5, 7: 14,  10: 14,  15: 14.5, 20: 15  },
+  arbitrage: { 1: 7,   3: 7,   5: 7,    7: 7,   10: 7,   15: 7,    20: 7   },
+};
+
+function getHorizonBucket(years) {
+  for (const bucket of CAGR_HORIZON_BUCKETS) {
+    if (years <= bucket) return bucket;
+  }
+  return 20;
+}
+
+function computeSuggestedCAGR(selectedFunds, yearsLeft, trackedFunds) {
+  if (!selectedFunds || !trackedFunds || yearsLeft <= 0) return null;
+  const bucket = getHorizonBucket(yearsLeft);
+  const eligible = [];
+  for (const [fundId, fundCfg] of Object.entries(selectedFunds)) {
+    const meta = trackedFunds.find(f => f.id === fundId);
+    if (!meta) continue;
+    const indexKey = meta.index
+      || (meta.category?.toLowerCase().includes('arbitrage') ? 'arbitrage' : null);
+    if (!indexKey || !INDEX_HISTORICAL_CAGR[indexKey]) continue;
+    const rawCagr = INDEX_HISTORICAL_CAGR[indexKey][bucket];
+    if (rawCagr == null) continue;
+    eligible.push({ sip: Math.max(0, fundCfg.monthlySIP || 0), adjustedCagr: rawCagr - CONSERVATIVE_CAGR_DISCOUNT });
+  }
+  if (eligible.length === 0) return null;
+  const totalSIP = eligible.reduce((sum, e) => sum + e.sip, 0);
+  const equalWeight = totalSIP === 0;
+  let weightedSum = 0;
+  for (const e of eligible) {
+    const w = equalWeight ? 1 / eligible.length : e.sip / totalSIP;
+    weightedSum += e.adjustedCagr * w;
+  }
+  return Math.round(weightedSum * 10) / 10;
+}
+
+console.log('\nHorizon Bucket (ceiling logic):');
+{
+  // Ceiling rule: always round UP to the next standard bucket
+  assert(getHorizonBucket(1)    === 1,  'Exactly 1Y → bucket 1');
+  assert(getHorizonBucket(0.5)  === 1,  'Under 1Y → bucket 1 (imminent)');
+  assert(getHorizonBucket(2)    === 3,  '2Y → bucket 3 (next above 2)');
+  assert(getHorizonBucket(3)    === 3,  'Exactly 3Y → bucket 3');
+  assert(getHorizonBucket(4)    === 5,  '4Y → bucket 5 (not 3)');
+  assert(getHorizonBucket(5)    === 5,  'Exactly 5Y → bucket 5');
+  assert(getHorizonBucket(6)    === 7,  '6Y → bucket 7');
+  assert(getHorizonBucket(7)    === 7,  'Exactly 7Y → bucket 7');
+  assert(getHorizonBucket(8)    === 10, '8Y → bucket 10 (conservative ceiling)');
+  assert(getHorizonBucket(9)    === 10, '9Y → bucket 10');
+  assert(getHorizonBucket(10)   === 10, 'Exactly 10Y → bucket 10');
+  assert(getHorizonBucket(11)   === 15, '11Y → bucket 15');
+  assert(getHorizonBucket(14)   === 15, '14Y → bucket 15');
+  assert(getHorizonBucket(15)   === 15, 'Exactly 15Y → bucket 15');
+  assert(getHorizonBucket(16)   === 20, '16Y → bucket 20');
+  assert(getHorizonBucket(20)   === 20, 'Exactly 20Y → bucket 20');
+  assert(getHorizonBucket(25)   === 20, 'Beyond 20Y → capped at 20');
+  assert(getHorizonBucket(40)   === 20, '40Y → capped at 20');
+}
+
+console.log('\nCAGR Suggestion (index-weighted):');
+{
+  const funds = [
+    { id: 'sc1', name: 'Small Cap A', category: 'Small Cap',  index: 'smallcap' },
+    { id: 'mc1', name: 'Mid Cap A',   category: 'Mid Cap',    index: 'midcap'   },
+    { id: 'lc1', name: 'Large Cap A', category: 'Large Cap',  index: 'largecap' },
+    { id: 'arb', name: 'Arbitrage A', category: 'Arbitrage',  index: null       },
+  ];
+
+  // Test 1: Single smallcap fund, 10Y horizon
+  // getHorizonBucket(10) = 10 → smallcap raw = 14, adjusted = 13.5
+  const single = computeSuggestedCAGR({ sc1: { monthlySIP: 5000 } }, 10, funds);
+  assert(single === 13.5, `Single smallcap 10Y: expected 13.5, got ${single}`);
+
+  // Test 2: Single midcap fund, 15Y horizon
+  // getHorizonBucket(15) = 15 → midcap raw = 15, adjusted = 14.5
+  const midcap15 = computeSuggestedCAGR({ mc1: { monthlySIP: 3000 } }, 15, funds);
+  assert(midcap15 === 14.5, `Single midcap 15Y: expected 14.5, got ${midcap15}`);
+
+  // Test 3: Single largecap fund, 8Y horizon
+  // getHorizonBucket(8) = 10 (ceiling!) → largecap raw = 12, adjusted = 11.5
+  const largecap8 = computeSuggestedCAGR({ lc1: { monthlySIP: 2000 } }, 8, funds);
+  assert(largecap8 === 11.5, `Largecap 8Y (uses 10Y bucket via ceiling): expected 11.5, got ${largecap8}`);
+
+  // Test 4: Mixed funds — equal SIP → equal weight
+  // smallcap(10Y) = 13.5, midcap(10Y) = 14.5 → average = 14.0
+  const equalMix = computeSuggestedCAGR(
+    { sc1: { monthlySIP: 5000 }, mc1: { monthlySIP: 5000 } }, 10, funds
+  );
+  assert(equalMix === 14.0, `Equal SIP small+mid 10Y: expected 14.0, got ${equalMix}`);
+
+  // Test 5: Weighted mix — 3:1 smallcap:largecap at 10Y
+  // smallcap(10Y) adj = 13.5 × 0.75 + largecap(10Y) adj = 11.5 × 0.25 = 10.125 + 2.875 = 13.0
+  const weighted = computeSuggestedCAGR(
+    { sc1: { monthlySIP: 6000 }, lc1: { monthlySIP: 2000 } }, 10, funds
+  );
+  assert(weighted === 13.0, `3:1 small:large 10Y: expected 13.0, got ${weighted}`);
+
+  // Test 6: Arbitrage fund (null index) → resolved via category, uses 'arbitrage' table
+  // arbitrage(10Y) raw = 7, adjusted = 6.5
+  const arb = computeSuggestedCAGR({ arb: { monthlySIP: 3000 } }, 10, funds);
+  assert(arb === 6.5, `Arbitrage fund 10Y: expected 6.5, got ${arb}`);
+
+  // Test 7: All SIPs are zero → equal weighting fallback (not null)
+  // smallcap(10Y) = 13.5, midcap(10Y) = 14.5 → equal = 14.0
+  const zeroSIP = computeSuggestedCAGR(
+    { sc1: { monthlySIP: 0 }, mc1: { monthlySIP: 0 } }, 10, funds
+  );
+  assert(zeroSIP === 14.0, `All zero SIPs → equal weight fallback: expected 14.0, got ${zeroSIP}`);
+
+  // Test 8: No funds linked → null
+  const none = computeSuggestedCAGR({}, 10, funds);
+  assert(none === null, `No funds → null (caller uses goal-type default)`);
+
+  // Test 9: Fund not in trackedFunds → skipped, doesn't crash
+  const unknown = computeSuggestedCAGR({ ghost: { monthlySIP: 5000 } }, 10, funds);
+  assert(unknown === null, `Unknown fundId → null (fund not in trackedFunds)`);
+
+  // Test 10: Very short horizon (0.5Y) uses bucket 1 — no crash
+  const short = computeSuggestedCAGR({ sc1: { monthlySIP: 1000 } }, 0.5, funds);
+  // smallcap bucket 1 = 11 - 0.5 = 10.5
+  assert(short === 10.5, `0.5Y horizon uses bucket 1: expected 10.5, got ${short}`);
+
+  // Test 11: Horizon of exactly 0 → null (guard against division by zero)
+  const zero = computeSuggestedCAGR({ sc1: { monthlySIP: 1000 } }, 0, funds);
+  assert(zero === null, `yearsLeft=0 → null`);
+
+  // Test 12: 6Y horizon → ceiling bucket 7
+  // midcap(7Y) raw = 14.5, adjusted = 14.0
+  const sixYear = computeSuggestedCAGR({ mc1: { monthlySIP: 5000 } }, 6, funds);
+  assert(sixYear === 14.0, `6Y → bucket 7 (ceiling): expected 14.0, got ${sixYear}`);
+}
+
 // ── Summary ─────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);
