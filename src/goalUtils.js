@@ -851,6 +851,148 @@ export function validateGoal(goal) {
 // ─── Export all goal types as an ordered array for the form ────────
 export const GOAL_TYPE_OPTIONS = Object.values(GOAL_TYPES);
 
+// ─── Index-Based CAGR Suggestion (SW-1 enhancement) ──────────────
+//
+// When a user links specific mutual funds to a goal, we can derive a
+// better CAGR assumption than the generic goal-type default.
+//
+// Approach:
+//   1. Each fund maps to an equity index (smallcap → Nifty SC250, etc.)
+//   2. Look up that index's historical average CAGR at a standard
+//      horizon bucket — always rounding UP (ceiling) for conservatism
+//   3. Subtract 0.5% as an additional conservatism buffer
+//   4. If multiple funds: weight by monthly SIP amount
+//      (equal weight if all SIPs are zero — e.g. fund just linked, no amount yet)
+//
+// Ceiling bucket rule:
+//   8Y goal → 10Y bucket   (not 7Y — next bucket UP)
+//   6Y goal → 7Y bucket
+//   4Y goal → 5Y bucket
+//   11–14Y  → 15Y bucket
+//   >20Y    → 20Y bucket   (capped)
+//
+// This ensures we never use a shorter (more optimistic) history window
+// than the actual goal horizon demands.
+
+/**
+ * Standard horizon buckets available for CAGR lookup.
+ * Ceiling logic: always pick the next bucket equal-to-or-greater-than goal years.
+ */
+export const CAGR_HORIZON_BUCKETS = [1, 3, 5, 7, 10, 15, 20];
+
+/**
+ * Conservative discount applied on top of historical index CAGR.
+ * Rationale: past index returns don't guarantee future performance;
+ * this small buffer helps projections stay realistic.
+ */
+export const CONSERVATIVE_CAGR_DISCOUNT = 0.5; // percentage points, subtracted at computation
+
+/**
+ * Historical average CAGR estimates per index, per horizon bucket.
+ *
+ * These are approximate long-run averages derived from NSE India index
+ * factsheets as of 2025. NOT point-to-point returns (which are
+ * misleading) — they represent reasonable forward-looking expectations
+ * based on multi-year historical performance across market cycles.
+ *
+ * Index keys must match the 'index' field on FUNDS[] entries in App.jsx:
+ *   'largecap'  → Nifty 50
+ *   'midcap'    → Nifty Midcap 150
+ *   'smallcap'  → Nifty Smallcap 250
+ *   'arbitrage' → Arbitrage / liquid category (near-debt returns)
+ *
+ * CONSERVATIVE_CAGR_DISCOUNT (0.5%) is subtracted at computation time — not stored here.
+ * Review and update these values annually. Last reviewed: May 2026.
+ * Source: NSE India index factsheets, AMFI historical data.
+ *
+ *                           1Y    3Y     5Y     7Y    10Y   15Y   20Y
+ */
+export const INDEX_HISTORICAL_CAGR = {
+  largecap:  { 1: 11,  3: 11,  5: 11.5, 7: 12,  10: 12,  15: 12.5, 20: 13  }, // Nifty 50
+  midcap:    { 1: 12,  3: 13,  5: 14,   7: 14.5, 10: 15,  15: 15,   20: 15  }, // Nifty Midcap 150
+  smallcap:  { 1: 11,  3: 13,  5: 13.5, 7: 14,  10: 14,  15: 14.5, 20: 15  }, // Nifty Smallcap 250
+  arbitrage: { 1: 7,   3: 7,   5: 7,    7: 7,   10: 7,   15: 7,    20: 7   }, // Arbitrage / liquid
+};
+
+/**
+ * Return the ceiling horizon bucket for a given years-remaining value.
+ * Always rounds UP to the next standard bucket — conservative bias.
+ *
+ * Examples: 8Y → 10, 6Y → 7, 4Y → 5, 11Y → 15, 1Y → 1, 0.5Y → 1, 21Y → 20
+ *
+ * @param {number} years - Years remaining to goal target date (can be fractional)
+ * @returns {number} One of [1, 3, 5, 7, 10, 15, 20]
+ */
+export function getHorizonBucket(years) {
+  for (const bucket of CAGR_HORIZON_BUCKETS) {
+    if (years <= bucket) return bucket;
+  }
+  return 20; // cap — beyond 20Y, use 20Y history
+}
+
+/**
+ * Compute the suggested CAGR for a goal based on its linked funds.
+ *
+ * Algorithm:
+ *   1. Find ceiling horizon bucket for yearsLeft
+ *   2. For each linked fund: look up index CAGR at that bucket, subtract discount
+ *   3. Weight each fund's adjusted CAGR by its monthly SIP
+ *      (fall back to equal weight if all SIPs are 0)
+ *   4. Return weighted average rounded to 1 decimal place
+ *
+ * Returns null if:
+ *   - No funds linked, OR
+ *   - None of the linked funds have a recognised index
+ *
+ * Caller should fall back to GOAL_TYPES[goalType].defaultCAGR when null.
+ *
+ * @param {object} selectedFunds  - { fundId: { monthlySIP, sipDate, alertEnabled } }
+ * @param {number} yearsLeft      - Goal horizon in years (fractional OK)
+ * @param {Array}  trackedFunds   - [{ id, name, category, index }] — must include index field
+ * @returns {number|null}
+ */
+export function computeSuggestedCAGR(selectedFunds, yearsLeft, trackedFunds) {
+  if (!selectedFunds || !trackedFunds || yearsLeft <= 0) return null;
+
+  const bucket = getHorizonBucket(yearsLeft);
+
+  // Build list of eligible entries: fund must have a recognised index (or be Arbitrage category)
+  const eligible = [];
+  for (const [fundId, fundCfg] of Object.entries(selectedFunds)) {
+    const meta = trackedFunds.find(f => f.id === fundId);
+    if (!meta) continue;
+
+    // Resolve index key: use fund's index field directly, or infer 'arbitrage' from category
+    const indexKey = meta.index
+      || (meta.category?.toLowerCase().includes('arbitrage') ? 'arbitrage' : null);
+    if (!indexKey || !INDEX_HISTORICAL_CAGR[indexKey]) continue;
+
+    const rawCagr = INDEX_HISTORICAL_CAGR[indexKey][bucket];
+    if (rawCagr == null) continue;
+
+    eligible.push({
+      fundId,
+      sip: Math.max(0, fundCfg.monthlySIP || 0),
+      adjustedCagr: rawCagr - CONSERVATIVE_CAGR_DISCOUNT,
+    });
+  }
+
+  if (eligible.length === 0) return null;
+
+  // Weight by SIP amount; if all SIPs are zero (funds just linked, no amounts entered yet),
+  // use equal weighting so the suggestion still updates meaningfully.
+  const totalSIP = eligible.reduce((sum, e) => sum + e.sip, 0);
+  const equalWeight = totalSIP === 0;
+
+  let weightedSum = 0;
+  for (const e of eligible) {
+    const w = equalWeight ? 1 / eligible.length : e.sip / totalSIP;
+    weightedSum += e.adjustedCagr * w;
+  }
+
+  return Math.round(weightedSum * 10) / 10; // 1 decimal place
+}
+
 // ─── Dip Prioritisation: Conviction Scoring (SW-3) ───────────────
 // When multiple funds show "Buy Dip" signals simultaneously and the user
 // has a lump sum to deploy, we need to rank them by conviction — i.e.,

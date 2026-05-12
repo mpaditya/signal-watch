@@ -315,8 +315,10 @@ export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig,
   }, []);
 
   // ── Fund list for GoalForm ──────────────────────────────────────
+  // Pass 'index' so GoalForm can derive the CAGR suggestion from the fund's benchmark index.
+  // index values match INDEX_HISTORICAL_CAGR keys in goalUtils.js: 'largecap', 'midcap', 'smallcap', null (arbitrage).
   const trackedFunds = useMemo(() =>
-    (funds || []).map(f => ({ id: f.id, name: f.name, category: f.category })),
+    (funds || []).map(f => ({ id: f.id, name: f.name, category: f.category, index: f.index })),
     [funds]
   );
 
