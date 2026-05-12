@@ -46,6 +46,7 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SW-7** | **NSE P/E multi-source fallback** | **P3 — Later** | **Not Started** | 1 | — | — | — | Try Screener.in, Trendlyne before estimated values. |
 | **SW-8** | **Email alert: per-signal toggle** | **P3 — Later** | **LIVE** | 1 | Mar 26 | Mar 26 | v3 | Per-fund mute is live. Consider per-signal-type toggles. |
 | **SW-9** | **Goal abandon/archive** | **P2 — Soon** | **Not Started** | 1 | — | — | S2 | Soft delete via status=abandoned. Hard delete deferred to AR-1. |
+| **SW-10** | **HashRouter for GitHub Pages SPA routing** | **P1 — Next** | **DONE** | 1 | May 26 | May 12, 2026 | S2 | Wraps App in HashRouter so direct URL nav never 404s on GitHub Pages. Must precede any new routes. |
 | **ARCHITECTURE ****&**** INFRASTRUCTURE** |
 | **AR-1** | **Supabase migration (Postgres)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Free tier. Replaces localStorage. Adds signal_history + decisions tables. |
 | **AR-2** | **Authentication (magic link)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Email magic link via Supabase Auth. Required before cloud DB stores financial data. |
