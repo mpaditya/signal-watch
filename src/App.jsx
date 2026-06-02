@@ -11,7 +11,7 @@ const FUNDS=[
   {id:'hdfcsc',name:'HDFC Small Cap',             searchQ:'HDFC Small Cap Fund',         goals:['retirement','education'],category:'Small Cap',       index:'smallcap'},
   {id:'hdfcmd',name:'HDFC Mid-Cap Opportunities', searchQ:'HDFC Mid Cap Fund',           goals:['retirement','education'],category:'Mid Cap',         index:'midcap'},
   {id:'nimcap',name:'Nippon India MultiCap',       searchQ:'Nippon India Multi Cap',      goals:['retirement'],           category:'Multi Cap',       index:'nifty500'},
-  {id:'hdfcfc',name:'HDFC Flexi Cap',             searchQ:'HDFC Flexi Cap Fund',         goals:['retirement','education'],category:'Flexi Cap',       index:'largecap'},
+  {id:'hdfcfc',name:'HDFC Flexi Cap',             searchQ:'HDFC Flexi Cap Fund',         goals:['retirement','education'],category:'Flexi Cap',       index:'nifty500'},
   {id:'mirae', name:'Mirae Large & Midcap',       searchQ:'Mirae Asset Large',           goals:['retirement','education'],category:'Large & Mid Cap', index:'midcap'},
   {id:'sbiarb',name:'SBI Arbitrage Opps',          searchQ:'SBI Arbitrage Opportunities', goals:['education'],            category:'Arbitrage',       index:null},
   {id:'sbisc', name:'SBI Small Cap',              searchQ:'SBI Small Cap Fund',          goals:['retirement','education'],category:'Small Cap',       index:'smallcap'},
@@ -619,6 +619,7 @@ export default function App(){
                 Nifty50 P/E: <b style={{fontWeight:500,color:marketPE.largecap<20?'#3B6D11':marketPE.largecap<28?'#854F0B':'#A32D2D'}}>{marketPE.largecap?.toFixed(1)}</b>
                 {' '}· N500 P/E: <b style={{fontWeight:500,color:marketPE.nifty500<22?'#3B6D11':marketPE.nifty500<30?'#854F0B':'#A32D2D'}}>{marketPE.nifty500?.toFixed(1)}</b>
                 {' '}· SC250 P/E: <b style={{fontWeight:500,color:marketPE.smallcap<25?'#3B6D11':marketPE.smallcap<35?'#854F0B':'#A32D2D'}}>{marketPE.smallcap?.toFixed(1)}</b>
+                {peStatus==='fallback'&&<span style={{fontSize:9,color:'var(--text-tertiary)',marginLeft:5}}>(est. Jun 2026)</span>}
               </span>
             )}
           </div>
