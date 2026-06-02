@@ -221,7 +221,7 @@ function makeCaptureFetch(captureRef) {
     assert(await callLLM('Test') === null, 'returns null when candidates key missing entirely')
   }
 
-  // ── Hyperparameter defaults & overrides (DEC-038: financial-advice tuning) ──
+  // ── Hyperparameter defaults & overrides (DEC-040: financial-advice tuning) ──
   console.log('\ncallLLM — Hyperparameter Defaults & Overrides:')
   {
     setLLMKey('AIzaTestKey')

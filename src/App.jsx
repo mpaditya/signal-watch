@@ -184,7 +184,7 @@ function computeMetrics(raw,avgDays,dipPct){
   const hi=Math.max(...yr),lo=Math.min(...yr)
   const rangePct=hi===lo?50:Math.max(0,Math.min(100,(cur-lo)/(hi-lo)*100))
   const drawdownFrom52=(cur-hi)/hi*100
-  // DEC-039 (signal threshold tuning): Buy Dip at -dipPct, Watch in -dipPct/2 to -dipPct,
+  // DEC-041 (signal threshold tuning): Buy Dip at -dipPct, Watch in -dipPct/2 to -dipPct,
   // Strong Run at +dipPct/2 (asymmetric — runs are confirmed sooner than dips).
   // Default dipPct=4 → Buy Dip ≤-4%, Watch -2 to -4%, Neutral ±2%, Strong Run ≥+2%.
   const signal=fromAvg<=-dipPct?SIG.dip:fromAvg<=-(dipPct/2)?SIG.watch:fromAvg>=dipPct/2?SIG.run:SIG.neutral

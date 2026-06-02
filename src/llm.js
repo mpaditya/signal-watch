@@ -1,5 +1,5 @@
 // AR-5 (Multi-LLM abstraction layer): Single entry point for all LLM calls in the app.
-// Currently backed by Gemini only. Full multi-provider cascade deferred (see DEC-035, Gemini-only initial build).
+// Currently backed by Gemini only. Full multi-provider cascade deferred (see DEC-037, Gemini-only initial build).
 // Callers always receive { text, provider, model, tokens } or null.
 // null means "no LLM available" — callers must handle gracefully.
 
@@ -8,7 +8,7 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GE
 const LS_KEY = 'artha_gemini_key'
 
 // Defaults tuned for financial-advice use case (low randomness, focused token pool).
-// See DEC-038 (hyperparameter regime for financial advice).
+// See DEC-040 (hyperparameter regime for financial advice).
 const DEFAULT_TEMPERATURE = 0.2
 const DEFAULT_TOP_P       = 0.75
 const DEFAULT_MAX_TOKENS  = 1024
