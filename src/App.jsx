@@ -2,6 +2,7 @@ import GoalDashboard from './components/GoalDashboard';
 import DipPrioritisation from './components/DipPrioritisation';
 import LLMSettings from './components/LLMSettings';
 import ChatPanel from './components/ChatPanel';
+import{callLLM,hasLLMKey}from'./llm'
 import{useState,useEffect,useMemo,useCallback,useRef}from'react'
 import{LineChart,Line,ResponsiveContainer,Tooltip}from'recharts'
 
@@ -9,7 +10,7 @@ const FUNDS=[
   {id:'niscf', name:'Nippon India Small Cap',     searchQ:'Nippon India Small Cap',      goals:['retirement','education'],category:'Small Cap',       index:'smallcap'},
   {id:'hdfcsc',name:'HDFC Small Cap',             searchQ:'HDFC Small Cap Fund',         goals:['retirement','education'],category:'Small Cap',       index:'smallcap'},
   {id:'hdfcmd',name:'HDFC Mid-Cap Opportunities', searchQ:'HDFC Mid Cap Fund',           goals:['retirement','education'],category:'Mid Cap',         index:'midcap'},
-  {id:'nimcap',name:'Nippon India MultiCap',       searchQ:'Nippon India Multi Cap',      goals:['retirement'],           category:'Multi Cap',       index:'midcap'},
+  {id:'nimcap',name:'Nippon India MultiCap',       searchQ:'Nippon India Multi Cap',      goals:['retirement'],           category:'Multi Cap',       index:'nifty500'},
   {id:'hdfcfc',name:'HDFC Flexi Cap',             searchQ:'HDFC Flexi Cap Fund',         goals:['retirement','education'],category:'Flexi Cap',       index:'largecap'},
   {id:'mirae', name:'Mirae Large & Midcap',       searchQ:'Mirae Asset Large',           goals:['retirement','education'],category:'Large & Mid Cap', index:'midcap'},
   {id:'sbiarb',name:'SBI Arbitrage Opps',          searchQ:'SBI Arbitrage Opportunities', goals:['education'],            category:'Arbitrage',       index:null},
@@ -37,6 +38,8 @@ const PE_BANDS={
   smallcap: {cheap:25,fair:35,label:'Nifty SC250'},
   midcap:   {cheap:30,fair:42,label:'Nifty MC150'},
   largecap: {cheap:20,fair:28,label:'Nifty 50'},
+  // Nifty 500 covers the full market; used as benchmark for Multi Cap funds
+  nifty500: {cheap:22,fair:30,label:'Nifty 500'},
 }
 
 const DEFAULT_GOALS={
@@ -54,8 +57,10 @@ const LUMP_SUM_STORAGE_KEY='artha_lump_sum'
 // SW-9: Array of goal IDs the user has archived. Soft-delete only — the underlying
 // goal data stays in goalsConfig so a restore brings everything back unchanged.
 const ABANDONED_STORAGE_KEY='artha_abandoned_goals'
-// SW-7: Manual P/E override — stores {largecap, midcap, smallcap} entered by user
+// SW-7: Manual P/E override — stores {largecap, midcap, smallcap, nifty500} entered by user
 const PE_MANUAL_KEY='artha_pe_manual'
+// SW-7: Last successfully retrieved P/E (from NSE or LLM) — used as cache when all live sources fail
+const PE_CACHE_KEY='artha_pe_cache'
 
 function loadConfig(){
   try{const s=localStorage.getItem(STORAGE_KEY);return s?JSON.parse(s):DEFAULT_GOALS}catch{return DEFAULT_GOALS}
@@ -79,6 +84,9 @@ function saveAbandoned(ids){
 function loadPEManual(){try{const s=localStorage.getItem(PE_MANUAL_KEY);return s?JSON.parse(s):null}catch{return null}}
 function savePEManual(v){try{localStorage.setItem(PE_MANUAL_KEY,JSON.stringify(v))}catch{}}
 function clearPEManualStore(){try{localStorage.removeItem(PE_MANUAL_KEY)}catch{}}
+// SW-7: Last-live P/E cache — persists across sessions so "last known good" beats hardcoded guesses
+function loadPECache(){try{const s=localStorage.getItem(PE_CACHE_KEY);return s?JSON.parse(s):null}catch{return null}}
+function savePECache(v){try{localStorage.setItem(PE_CACHE_KEY,JSON.stringify({values:v,savedAt:Date.now()}))}catch{}}
 
 const fmtINR=n=>`₹${parseFloat(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`
 const fmtPct=(n,d=2)=>n==null?'--':(n>=0?'+':'')+parseFloat(n).toFixed(d)+'%'
@@ -437,41 +445,75 @@ export default function App(){
   const updateFundSIP=(gid,fid,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],funds:{...p[gid].funds,[fid]:Number(val)}}}))
   const updateSIPDate=(gid,fid,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],sipDates:{...p[gid].sipDates,[fid]:Number(val)}}}))
 
-  // SW-7: Fetch market P/E — tries NSE India (usually CORS-blocked from browser),
-  // falls back to manual override if user has set one, otherwise uses hardcoded estimates.
+  // SW-7: Fetch P/E via Gemini + Google Search. Returns parsed {largecap,midcap,smallcap,nifty500}
+  // or null on any failure. Only runs if user has configured a Gemini API key.
+  const fetchMarketPEViaLLM=useCallback(async()=>{
+    if(!hasLLMKey())return null
+    const prompt=`Using Google Search, find the CURRENT P/E (Price-to-Earnings) ratio for these NSE India indices: Nifty 50, Nifty Midcap 150, Nifty Smallcap 250, Nifty 500. Use today's most recent data. Return ONLY a valid JSON object, no other text: {"largecap":<Nifty50_PE>,"midcap":<NiftyMC150_PE>,"smallcap":<NiftySC250_PE>,"nifty500":<Nifty500_PE>}`
+    const resp=await callLLM(prompt,{enableSearch:true,maxTokens:60,temperature:0.1})
+    if(!resp?.text)return null
+    try{
+      // Extract JSON from response — model may wrap it in markdown or add commentary
+      const match=resp.text.match(/\{[^}]+\}/)
+      if(!match)return null
+      const parsed=JSON.parse(match[0])
+      const vals={largecap:parseFloat(parsed.largecap),midcap:parseFloat(parsed.midcap),smallcap:parseFloat(parsed.smallcap),nifty500:parseFloat(parsed.nifty500)}
+      if(Object.values(vals).some(v=>isNaN(v)||v<5||v>200))return null
+      return vals
+    }catch{return null}
+  },[])
+
+  // SW-7: Full P/E fetch cascade:
+  // 1. Manual override (user-entered) — highest priority, always respected
+  // 2. NSE India direct (CORS-blocked from browser, kept for future-proofing)
+  // 3. Gemini + Google Search (if user has API key configured)
+  // 4. Last-live cache (most recent successful fetch from any source)
+  // 5. Hardcoded estimates updated quarterly
   const fetchMarketPE=useCallback(async()=>{
+    // Manual override always wins — user entered these deliberately
+    if(peManualRef.current){setMarketPE(peManualRef.current);setPeStatus('manual');return}
     setPeStatus('loading')
     try{
-      // NSE India direct API — blocked by CORS in most browsers; attempt anyway for future-proofing
+      // NSE India direct — blocked by CORS from browser, but kept for environments where it works
       const r=await fetch('https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050',{
         headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json'},
-        signal:AbortSignal.timeout(5000)
+        signal:AbortSignal.timeout(3000)
       })
       if(r.ok){
         const d=await r.json()
         const pe=d?.data?.[0]?.pe
         if(pe){
-          // NSE only gives Nifty 50; estimate others from historical ratio (~1.45× and ~1.6×)
-          setMarketPE({largecap:parseFloat(pe),midcap:parseFloat(pe)*1.45,smallcap:parseFloat(pe)*1.6})
-          setPeStatus('live')
+          // NSE only exposes Nifty 50; derive others from historical ratios
+          const vals={largecap:parseFloat(pe),midcap:parseFloat(pe)*1.45,smallcap:parseFloat(pe)*1.6,nifty500:parseFloat(pe)*1.15}
+          setMarketPE(vals);setPeStatus('live')
+          savePECache(vals)
           return
         }
       }
     }catch{}
-    // NSE failed — use manual override if user has entered values
-    if(peManualRef.current){setMarketPE(peManualRef.current);setPeStatus('manual');return}
-    // Final fallback: hardcoded estimates. Update quarterly.
-    // As of June 2026 — Nifty50 ~21.5, MC150 ~31.2 (1.45×), SC250 ~29.8 (1.6× adj)
-    setMarketPE({largecap:21.5,midcap:31.2,smallcap:29.8})
+    // NSE CORS-blocked — try Gemini + Google Search
+    const llmVals=await fetchMarketPEViaLLM()
+    if(llmVals){
+      setMarketPE(llmVals);setPeStatus('llm')
+      savePECache(llmVals)
+      return
+    }
+    // LLM unavailable — use last successfully retrieved values if available
+    const cached=loadPECache()
+    if(cached?.values){setMarketPE(cached.values);setPeStatus('cached');return}
+    // Absolute last resort: hardcoded estimates. Update quarterly.
+    // As of June 2026 — Nifty50 ~21.5, MC150 ~31.2, SC250 ~29.8, Nifty500 ~24.7
+    setMarketPE({largecap:21.5,midcap:31.2,smallcap:29.8,nifty500:24.7})
     setPeStatus('fallback')
-  },[])
+  },[fetchMarketPEViaLLM])
 
   useEffect(()=>{fetchMarketPE()},[fetchMarketPE])
 
   // SW-7: Save manual P/E override and apply immediately
   const savePEOverride=useCallback(()=>{
-    const vals={largecap:parseFloat(peOverrideDraft.largecap),midcap:parseFloat(peOverrideDraft.midcap),smallcap:parseFloat(peOverrideDraft.smallcap)}
+    const vals={largecap:parseFloat(peOverrideDraft.largecap),midcap:parseFloat(peOverrideDraft.midcap),smallcap:parseFloat(peOverrideDraft.smallcap),nifty500:parseFloat(peOverrideDraft.nifty500||'')}
     if([vals.largecap,vals.midcap,vals.smallcap].some(isNaN))return
+    if(isNaN(vals.nifty500))delete vals.nifty500
     peManualRef.current=vals
     setPeManual(vals)
     setMarketPE(vals)
@@ -479,7 +521,7 @@ export default function App(){
     setPeOverrideOpen(false)
   },[peOverrideDraft])
 
-  // SW-7: Clear manual override and re-attempt NSE fetch (will fall back to hardcoded)
+  // SW-7: Clear manual override and re-run the cascade
   const clearPEOverride=useCallback(()=>{
     peManualRef.current=null
     setPeManual(null)
@@ -489,7 +531,7 @@ export default function App(){
 
   // SW-7: Open the manual P/E modal, pre-filling with current values
   const openPEOverride=useCallback(()=>{
-    setPeOverrideDraft({largecap:marketPE.largecap?.toFixed(1)||'',midcap:marketPE.midcap?.toFixed(1)||'',smallcap:marketPE.smallcap?.toFixed(1)||''})
+    setPeOverrideDraft({largecap:marketPE.largecap?.toFixed(1)||'',midcap:marketPE.midcap?.toFixed(1)||'',smallcap:marketPE.smallcap?.toFixed(1)||'',nifty500:marketPE.nifty500?.toFixed(1)||''})
     setPeOverrideOpen(true)
   },[marketPE])
 
@@ -545,7 +587,9 @@ export default function App(){
         </div>
         <div style={{display:'flex',gap:5,alignItems:'center',flexWrap:'wrap'}}>
           {peStatus==='live'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#EAF3DE',color:'#3B6D11'}}>P/E live</span>}
+          {peStatus==='llm'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#EAF3DE',color:'#3B6D11'}}>P/E via AI</span>}
           {peStatus==='manual'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#E6F1FB',color:'#185FA5',cursor:'pointer'}} onClick={openPEOverride}>P/E manual ✎</span>}
+          {peStatus==='cached'&&(()=>{const c=loadPECache();const ago=c?.savedAt?Math.round((Date.now()-c.savedAt)/86400000):null;return<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#FAEEDA',color:'#854F0B'}}>{ago!=null?`P/E cached ${ago}d ago`:'P/E cached'}</span>})()}
           {peStatus==='fallback'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#FAEEDA',color:'#854F0B'}}>P/E est. Jun 2026</span>}
           {peStatus==='loading'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'var(--bg-secondary)',color:'var(--text-secondary)'}}>P/E …</span>}
           {Object.entries(sigCount).map(([id,count])=>{const s=SIG[id];if(!s||!count)return null;return<span key={id} style={{padding:'2px 9px',borderRadius:99,fontSize:11,fontWeight:500,background:s.bg,color:s.color}}>{count} {s.label}</span>})}
@@ -573,6 +617,7 @@ export default function App(){
             {Object.entries(marketPE).length>0&&(
               <span style={{padding:'3px 11px',background:'var(--bg-secondary)',borderRadius:99,fontSize:12,color:'var(--text-secondary)'}}>
                 Nifty50 P/E: <b style={{fontWeight:500,color:marketPE.largecap<20?'#3B6D11':marketPE.largecap<28?'#854F0B':'#A32D2D'}}>{marketPE.largecap?.toFixed(1)}</b>
+                {' '}· N500 P/E: <b style={{fontWeight:500,color:marketPE.nifty500<22?'#3B6D11':marketPE.nifty500<30?'#854F0B':'#A32D2D'}}>{marketPE.nifty500?.toFixed(1)}</b>
                 {' '}· SC250 P/E: <b style={{fontWeight:500,color:marketPE.smallcap<25?'#3B6D11':marketPE.smallcap<35?'#854F0B':'#A32D2D'}}>{marketPE.smallcap?.toFixed(1)}</b>
               </span>
             )}
@@ -742,7 +787,7 @@ export default function App(){
       </main>
 
       <footer style={{padding:'1rem 1.5rem',marginTop:'1rem',borderTop:bs,textAlign:'center',fontSize:10,color:'var(--text-tertiary)',lineHeight:1.7}}>
-        Data: mfapi.in · P/E: NSE India ({peStatus==='live'?'live':peStatus==='manual'?'manual override':peStatus==='fallback'?'est. Jun 2026':'loading'}) · Informational only — not financial advice · Project Artha v3.0
+        Data: mfapi.in · P/E: {peStatus==='live'?'NSE live':peStatus==='llm'?'Gemini+Search':peStatus==='manual'?'manual override':peStatus==='cached'?'last cached':'est. Jun 2026'} · Informational only — not financial advice · Project Artha v3.0
       </footer>
 
       {/* SW-4 (in-app chat panel): Floating AI chat. Uses activeGoalsConfig so archived goals
@@ -762,7 +807,7 @@ export default function App(){
               <a href="https://www.nseindia.com/market-data/live-equity-market?symbol=NIFTY%2050"
                 target="_blank" rel="noreferrer" style={{color:'var(--text-primary)'}}>NSE India → Indices</a>.
             </div>
-            {[{key:'largecap',label:'Nifty 50 P/E',hint:'e.g. 21.5'},{key:'midcap',label:'Nifty MC150 P/E',hint:'e.g. 31.2'},{key:'smallcap',label:'Nifty SC250 P/E',hint:'e.g. 29.8'}].map(({key,label,hint})=>(
+            {[{key:'largecap',label:'Nifty 50 P/E',hint:'e.g. 21.5'},{key:'midcap',label:'Nifty MC150 P/E',hint:'e.g. 31.2'},{key:'smallcap',label:'Nifty SC250 P/E',hint:'e.g. 29.8'},{key:'nifty500',label:'Nifty 500 P/E',hint:'e.g. 24.7'}].map(({key,label,hint})=>(
               <div key={key} style={{marginBottom:12}}>
                 <div style={{fontSize:10,color:'var(--text-secondary)',marginBottom:4}}>{label}</div>
                 <input type="number" step="0.1" min="1" max="200" value={peOverrideDraft[key]} placeholder={hint}
