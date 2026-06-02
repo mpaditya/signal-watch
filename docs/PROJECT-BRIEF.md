@@ -286,6 +286,19 @@ The current localStorage-based config will strain as we add: signal history, mul
 
 | --- |
 
+## 3.5 Known Friction Points and Mitigations
+
+The GitHub Pages + Supabase + GitHub Actions architecture is production-grade but has 6 practical friction points that must be planned for. Full explanations in docs/WEB-DEV-MENTAL-MODELS.md section 9.
+
+- **Supabase free tier pauses DB after 7 days inactivity** → GitHub Actions cron ping every 5 days. Built FIRST in Sprint 3 (see SE-8).
+- **React Router 404s on direct URL navigation on GitHub Pages** → Use HashRouter (URLs become #/chat). Migrate BEFORE Sprint 2 multi-page additions (see SW-10).
+- **LLM responses feel sluggish without streaming** → Stream tokens from Edge Function to UI. Explicit requirement for SW-4 chat panel.
+- **CORS errors block Edge Function calls from GitHub Pages domain** → Every Edge Function includes CORS headers for mpaditya.github.io. Template into AR-5.
+- **Iteration loop through GitHub Actions deploy is slow** → Use npm run dev locally for 95% of testing. Push only for mobile/production verification.
+- **Edge Function cold starts add 2-5 seconds** → Same GH Actions keep-alive ping as the DB (combined workflow).
+
+**PRE-SPRINT-2 AUDIT (30 minutes):** Before Sprint 2 chat panel, verify: (1) router is HashRouter, (2) direct URL nav works, (3) npm run dev hot-reloads, (4) Supabase free-tier project exists. See SE-9.
+
 
 
 \# 4. Data Model (Current + Target)

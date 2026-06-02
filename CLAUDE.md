@@ -65,10 +65,11 @@ Live at: comforting-dusk-525b9e.netlify.app (migrating to GitHub Pages — see S
 - .github/workflows/daily-alert.yml — GitHub Actions cron schedule
 
 ## Project Documents (in repo)
-Three living documents in docs/ define all project decisions, priorities, and architecture:
+Four living documents in docs/ define all project decisions, priorities, and architecture:
 - docs/PROJECT-BRIEF.md — Vision, architecture, design principles, data model, LLM safety rules
 - docs/MASTER-BACKLOG.md — All 41 backlog items with priority, status, sprint assignments
 - docs/DECISION-LOG.md — 31 architecture and financial-logic decisions with rationale
+- docs/WEB-DEV-MENTAL-MODELS.md — Foundational web dev concepts (runtimes, builds, serverless, CORS, routing) and known friction points for this stack. Read before Sprint 2/3 work or when hitting infrastructure confusion.
 
 IMPORTANT: Before starting any work session:
 1. Always read CLAUDE.md (this file) first — it loads automatically

@@ -26,7 +26,7 @@ Master Backlog  |  v5  |  April 2026  |  Owner: mpaditya  |  Status: Active Deve
 
 ## Backlog Summary
 
-P0 (Now): 2 items  |  P1 (Next): 4 items  |  P2 (Soon): 11 items  |  P3 (Later): 12 items  |  P4 (Future): 6 items  |  DONE: 9 items  |  Total: 44 items
+P0 (Now): 3 items  |  P1 (Next): 9 items  |  P2 (Soon): 11 items  |  P3 (Later): 12 items  |  P4 (Future): 6 items  |  DONE: 3 items  |  Total: 44 items
 
 Current focus: AR-7 GitHub Pages migration + SW-3 Dip prioritisation.
 
@@ -45,8 +45,8 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SW-6** | **Goal type-specific glide path** | **P2 — Soon** | **Not Started** | 1 | — | — | — | Different derisking per goal type. Equity cutoff per Brief §4.2. |
 | **SW-7** | **NSE P/E multi-source fallback** | **P3 — Later** | **Not Started** | 1 | — | — | — | Try Screener.in, Trendlyne before estimated values. |
 | **SW-8** | **Email alert: per-signal toggle** | **P3 — Later** | **LIVE** | 1 | Mar 26 | Mar 26 | v3 | Per-fund mute is live. Consider per-signal-type toggles. |
-| **SW-9** | **Goal abandon/archive** | **P2 — Soon** | **DONE** | 1 | May 14, 2026 | May 14, 2026 | S2 | Soft delete via `artha_abandoned_goals` localStorage list (array of goal IDs). Works for both legacy goals (from `goalsConfig`) and v4 extra goals. App.jsx derives `activeGoalsConfig` which filters out archived goals — used by header pills, tab filters, goals & SIPs panel, fund cards, DipPrioritisation, and ChatPanel. GoalDashboard renders the full set and splits into Active section + collapsible Archive section. Archive button on each active card with `window.confirm` guard; Restore button on archived cards. See DEC-020 (soft delete decision). |
-| **SW-10** | **HashRouter for GitHub Pages SPA routing** | **P1 — Next** | **DONE** | 1 | May 26 | May 12, 2026 | S2 | Wraps App in HashRouter so direct URL nav never 404s on GitHub Pages. Must precede any new routes. |
+| **SW-9** | **Goal abandon/archive** | **P2 — Soon** | **Not Started** | 1 | — | — | S2 | Soft delete via status=abandoned. Hard delete deferred to AR-1. |
+| **SW-10** | **HashRouter for multi-page navigation** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | GitHub Pages returns 404 on direct URL navigation with BrowserRouter. Switch to HashRouter BEFORE adding chat panel or other routes. See Brief 3.5 friction #2. DEC-035. |
 | **ARCHITECTURE ****&**** INFRASTRUCTURE** |
 | **AR-1** | **Supabase migration (Postgres)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Free tier. Replaces localStorage. Adds signal_history + decisions tables. |
 | **AR-2** | **Authentication (magic link)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Email magic link via Supabase Auth. Required before cloud DB stores financial data. |
@@ -88,6 +88,8 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SE-5** | **LLM response validation layer** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | NEW: Every actionable LLM recommendation sanity-checked by deterministic rules. SIP caps, CAGR consistency, timeline/risk bounds. See DEC-026, Brief §6.3. |
 | **SE-6** | **Data minimisation for LLM prompts** | **P1 — Next** | **DONE** | 1-2 | May 14, 2026 | May 14, 2026 | S2 | Implemented in `ChatPanel.buildContext()`: fund names replaced with category labels (Small Cap A, Mid Cap A, etc.), no rupee amounts sent, only goal years remaining + public market P/E. System prompt also instructs Gemini not to echo fund names or rupee amounts back. See DEC-027, Brief §6.2. |
 | **SE-7** | **LLM traceability + tool-call audit** | **P2 — Soon** | **Not Started** | 2 | — | — | S3-4 | NEW: Log every LLM call: provider, model, prompt (post-anonymisation), response, tool calls I/O, latency, tokens, validation pass/fail. Console-log in S2, Supabase table in S3. |
+| **SE-8** | **Supabase keep-alive ping (GH Actions)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Supabase free tier pauses DB after 7 days inactivity. GH Actions cron pings DB + Edge Functions every 5 days. Build FIRST in Sprint 3 before any user-facing Supabase features. See Brief 3.5 friction #1 and #6. DEC-036. |
+| **SE-9** | **Pre-Sprint-2 readiness audit** | **P0 — Now** | **Not Started** | 1-2 | — | — | S1-2 | 30-min audit before Sprint 2. Verify: (1) router type — switch to HashRouter, (2) direct URL nav works, (3) npm run dev hot-reload works, (4) Supabase project set up. See Brief 3.5. |
 | **AR-10** | **Evaluate MCP server for tools** | **P3 — Later** | **Not Started** | 2-3 | — | — | — | NEW: After Supabase migration, evaluate building an MCP server to expose financial tools (goal projections, signal queries, portfolio calcs) for use by any MCP-compatible agent. |
 | **AR-11** | **Cloudflare Worker proxy for LLM API keys** | **P2 — Soon** | **Not Started** | 2 | — | — | — | Required before any non-developer user is given access to the app. ~20-line Worker proxies LLM calls server-side; API key stored as Cloudflare secret, never reaches the browser. Trigger: multi-user launch decision. See DEC-036 (Cloudflare Worker proxy required before multi-user launch). |
 | **SW-11** | **Multi-turn chat memory** | **P1 — Next** | **DONE** | 1-2 | May 14, 2026 | May 14, 2026 | S2 | Full conversation history passed to Gemini on each call. `callLLM()` accepts a `history` array of `{role, text}` and maps to Gemini's contents array (ai → model). Portfolio context lives in systemInstruction (sent once per call, not duplicated across history). Synthetic UI messages (welcome, fallbacks) excluded via `synthetic` flag. 10 new tests in `llm.test.js`. |
@@ -97,7 +99,7 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 
 - **Sprint 1 (Current):** AR-7 + SW-3 — GitHub Pages migration, then dip prioritisation. SW-1, SW-2 are DONE. AR-6 (CLAUDE.md) in progress.
 
-- **Sprint 2:** AR-5 + SE-5 + SE-6 + SW-4 + SW-9 + SE-1 — Multi-LLM layer, validation layer, data minimisation, in-app chat, goal abandon, graceful degradation. LLM safety infrastructure built BEFORE first LLM feature.
+- **Sprint 2:** SW-10 + AR-5 + SE-5 + SE-6 + SW-4 + SW-9 + SE-1 — HashRouter migration first, then multi-LLM layer, validation layer, data minimisation, in-app chat, goal abandon, graceful degradation. LLM safety infrastructure built BEFORE first LLM feature.
 
 - **Sprint 3:** AR-1 + AR-2 + AR-3 + AR-4 + SE-3 — Supabase migration, auth, signal history, decisions audit log, data export.
 
