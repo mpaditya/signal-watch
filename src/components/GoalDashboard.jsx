@@ -127,25 +127,42 @@ function inferType(goalId, label) {
 }
 
 // ─── Component ─────────────────────────────────────────────────────
-export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig, onHealthUpdate }) {
+export default function GoalDashboard({
+  goalsConfig, funds, onUpdateGoalsConfig, onHealthUpdate,
+  // SW-9 (goal abandon/archive): list of archived goal IDs + callbacks. Owned by App.jsx
+  // so the rest of the app filters consistently. GoalDashboard renders the archive view
+  // separately so users can find and restore archived goals.
+  abandonedIds = [], onArchive, onRestore,
+}) {
   const [corpusData, setCorpusData] = useState(() => loadCorpusData());
   const [extraGoals, setExtraGoals] = useState(() => loadExtraGoals());
   const [formOpen, setFormOpen] = useState(false);
   const [editingGoal, setEditingGoal] = useState(null);
   const [corpusGoalId, setCorpusGoalId] = useState(null);
   const [corpusInput, setCorpusInput] = useState('');
+  // SW-9: archive view is collapsed by default — it's a recovery tool, not a primary view.
+  const [showArchive, setShowArchive] = useState(false);
 
   // Build unified goals array: legacy goals from goalsConfig + extra goals NOT already in goalsConfig
   // (New goals get injected into goalsConfig on save, so we skip them from extraGoals to avoid dupes)
-  const allGoals = useMemo(() => {
+  // SW-9: split active vs archived using the abandonedIds list owned by App.jsx.
+  const { activeGoals, archivedGoals } = useMemo(() => {
     const configKeys = new Set(Object.keys(goalsConfig || {}));
     const legacy = Object.entries(goalsConfig || {}).map(([gid, g]) =>
       legacyToV4(gid, g, corpusData)
     );
     const extras = extraGoals
       .filter(g => g.status === GOAL_STATUSES.ACTIVE && !configKeys.has(g.id));
-    return [...legacy, ...extras];
-  }, [goalsConfig, corpusData, extraGoals]);
+    const all = [...legacy, ...extras];
+    const abandonedSet = new Set(abandonedIds);
+    return {
+      activeGoals:   all.filter(g => !abandonedSet.has(g.id)),
+      archivedGoals: all.filter(g =>  abandonedSet.has(g.id)),
+    };
+  }, [goalsConfig, corpusData, extraGoals, abandonedIds]);
+
+  // Kept for backwards compatibility with existing healthMap/summary logic below.
+  const allGoals = activeGoals;
 
   // Compute health for all goals
   const healthMap = useMemo(() => {
@@ -384,22 +401,57 @@ export default function GoalDashboard({ goalsConfig, funds, onUpdateGoalsConfig,
         </div>
       )}
 
-      {/* Goal Cards Grid */}
+      {/* Goal Cards Grid (active goals only) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
-        {allGoals.map(goal => (
+        {activeGoals.map(goal => (
           <GoalCard
             key={goal.id}
             goal={goal}
             onEdit={handleEdit}
             onUpdateCorpus={openCorpusUpdate}
             onStatusChange={goal._isLegacy ? undefined : handleStatusChange}
+            onArchive={onArchive}
           />
         ))}
       </div>
 
-      {allGoals.length === 0 && (
+      {activeGoals.length === 0 && archivedGoals.length === 0 && (
         <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-secondary)', fontSize: 13 }}>
           No goals to display. Create a goal to start tracking.
+        </div>
+      )}
+
+      {/* SW-9: Archive section — collapsed by default, shows count when there are archived goals. */}
+      {archivedGoals.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <button
+            onClick={() => setShowArchive(s => !s)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '5px 13px', borderRadius: 99,
+              border: '0.5px solid var(--border-strong)',
+              background: showArchive ? 'var(--bg-secondary)' : 'var(--bg)',
+              color: 'var(--text-secondary)', fontSize: 12, cursor: 'pointer',
+            }}
+          >
+            🗄 Archived goals ({archivedGoals.length}) {showArchive ? '▲' : '▼'}
+          </button>
+
+          {showArchive && (
+            <div style={{
+              marginTop: 12,
+              display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12,
+            }}>
+              {archivedGoals.map(goal => (
+                <GoalCard
+                  key={goal.id}
+                  goal={goal}
+                  isArchived={true}
+                  onRestore={onRestore}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

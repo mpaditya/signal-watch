@@ -26,7 +26,7 @@ Master Backlog  |  v5  |  April 2026  |  Owner: mpaditya  |  Status: Active Deve
 
 ## Backlog Summary
 
-P0 (Now): 2 items  |  P1 (Next): 7 items  |  P2 (Soon): 11 items  |  P3 (Later): 12 items  |  P4 (Future): 6 items  |  DONE: 3 items  |  Total: 41 items
+P0 (Now): 2 items  |  P1 (Next): 4 items  |  P2 (Soon): 11 items  |  P3 (Later): 12 items  |  P4 (Future): 6 items  |  DONE: 9 items  |  Total: 44 items
 
 Current focus: AR-7 GitHub Pages migration + SW-3 Dip prioritisation.
 
@@ -40,19 +40,19 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SW-1** | **Dynamic add/delete goals** | **P0 — Now** | **DONE** | 1 | Apr 26 | Apr 26 | S1 | 7 goal types, CRUD, corpus tracking, off-track engine. Shipped Apr 2026. |
 | **SW-2** | **Start date + corpus tracking** | **P0 — Now** | **DONE** | 1 | Apr 26 | Apr 26 | S1 | Projections, health scoring, staleness nudges, off-track levers. Shipped Apr 2026. |
 | **SW-3** | **Dip prioritisation + funds** | **P0 — Now** | **DONE** | 1 | Apr 26 | Apr 16, 2026 | S1 | 5-factor conviction scoring (dip depth, P/E, drawdown, horizon, health). Lump sum allocation ranked table. 12 new unit tests. DEC-034 added. |
-| **SW-4** | **In-app chat panel** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | Lightweight chat: “why this signal?” First Claude API tool-use integration. MUST use multi-LLM abstraction (AR-5) and validation layer (SE-5). |
+| **SW-4** | **In-app chat panel** | **P1 — Next** | **DONE** | 1-2 | May 14, 2026 | May 14, 2026 | S2 | Floating 💬 chat panel (`ChatPanel.jsx`). Sends anonymised portfolio context to Gemini via `callLLM()`. Deterministic fallback when no key / API error. SE-6 data minimisation implemented inline (fund names replaced with category labels, no rupee amounts in prompts). SE-5 response validation deferred — chat gives advice, not specific numbers. |
 | **SW-5** | **Category comparison** | **P2 — Soon** | **Not Started** | 1 | — | — | — | Compare 1M/3M return vs category average. |
 | **SW-6** | **Goal type-specific glide path** | **P2 — Soon** | **Not Started** | 1 | — | — | — | Different derisking per goal type. Equity cutoff per Brief §4.2. |
 | **SW-7** | **NSE P/E multi-source fallback** | **P3 — Later** | **Not Started** | 1 | — | — | — | Try Screener.in, Trendlyne before estimated values. |
 | **SW-8** | **Email alert: per-signal toggle** | **P3 — Later** | **LIVE** | 1 | Mar 26 | Mar 26 | v3 | Per-fund mute is live. Consider per-signal-type toggles. |
-| **SW-9** | **Goal abandon/archive** | **P2 — Soon** | **Not Started** | 1 | — | — | S2 | Soft delete via status=abandoned. Hard delete deferred to AR-1. |
+| **SW-9** | **Goal abandon/archive** | **P2 — Soon** | **DONE** | 1 | May 14, 2026 | May 14, 2026 | S2 | Soft delete via `artha_abandoned_goals` localStorage list (array of goal IDs). Works for both legacy goals (from `goalsConfig`) and v4 extra goals. App.jsx derives `activeGoalsConfig` which filters out archived goals — used by header pills, tab filters, goals & SIPs panel, fund cards, DipPrioritisation, and ChatPanel. GoalDashboard renders the full set and splits into Active section + collapsible Archive section. Archive button on each active card with `window.confirm` guard; Restore button on archived cards. See DEC-020 (soft delete decision). |
 | **SW-10** | **HashRouter for GitHub Pages SPA routing** | **P1 — Next** | **DONE** | 1 | May 26 | May 12, 2026 | S2 | Wraps App in HashRouter so direct URL nav never 404s on GitHub Pages. Must precede any new routes. |
 | **ARCHITECTURE ****&**** INFRASTRUCTURE** |
 | **AR-1** | **Supabase migration (Postgres)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Free tier. Replaces localStorage. Adds signal_history + decisions tables. |
 | **AR-2** | **Authentication (magic link)** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | Email magic link via Supabase Auth. Required before cloud DB stores financial data. |
 | **AR-3** | **Signal history table + persist** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | GH Actions writes daily signals to Supabase. Enables trend detection. |
 | **AR-4** | **Decisions audit log table** | **P1 — Next** | **Not Started** | 2 | — | — | S3 | PROMOTED from P2. Log every action: fund, amount, signal, 30d/90d outcome. See Brief §4.5. |
-| **AR-5** | **Multi-LLM abstraction layer** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | PROMOTED from P2. Provider abstraction, rate-limit detection, fallback cascade, response routing. MUST be built before SW-4. See DEC-025 and Brief §6.1. |
+| **AR-5** | **Multi-LLM abstraction layer** | **P1 — Next** | **DONE** | 1-2 | May 13, 2026 | May 14, 2026 | S2 | Gemini-only initial build. `src/llm.js` exposes `callLLM()`, `hasLLMKey()`, `setLLMKey()`. BYOK pattern (key in localStorage). Graceful fallback to null on any error. 28 unit tests in `src/llm.test.js`. Settings UI in `LLMSettings.jsx`. Full multi-provider cascade deferred. See DEC-025, DEC-035, DEC-037. |
 | **AR-6** | **CLAUDE.md + .devcontainer.json** | **P1 — Next** | **DONE** | 1 | Apr 26 | Apr 16, 2026 | S1 | CLAUDE.md created with full project context. .claude/settings.json for auto-permissions. .devcontainer.json deferred. |
 | **AR-7** | **GitHub Pages migration** | **P0 — Now** | **DONE** | 1 | Apr 26 | Apr 16, 2026 | S1 | Migrated from Netlify to GitHub Pages. peaceiris/actions-gh-pages@v4 deploys dist/ to gh-pages on push to main. SPA 404 routing via public/404.html. DEC-033 added. |
 | **AR-8** | **Serverless backend functions** | **P3 — Later** | **Not Started** | 2 | — | — | — | Netlify Functions / Supabase Edge Functions for agent API calls. |
@@ -86,9 +86,12 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SE-3** | **Data export / backup** | **P2 — Soon** | **Not Started** | 2 | — | — | S3 | One-click export to JSON. Essential before DB migration. |
 | **SE-4** | **Content Security Policy** | **P3 — Later** | **Not Started** | 2 | — | — | — | Netlify headers for XSS protection. |
 | **SE-5** | **LLM response validation layer** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | NEW: Every actionable LLM recommendation sanity-checked by deterministic rules. SIP caps, CAGR consistency, timeline/risk bounds. See DEC-026, Brief §6.3. |
-| **SE-6** | **Data minimisation for LLM prompts** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | NEW: Anonymise financial data before sending to LLM APIs. Prompt templates enforce no raw amounts, no fund names, no PII. See DEC-027, Brief §6.2. |
+| **SE-6** | **Data minimisation for LLM prompts** | **P1 — Next** | **DONE** | 1-2 | May 14, 2026 | May 14, 2026 | S2 | Implemented in `ChatPanel.buildContext()`: fund names replaced with category labels (Small Cap A, Mid Cap A, etc.), no rupee amounts sent, only goal years remaining + public market P/E. System prompt also instructs Gemini not to echo fund names or rupee amounts back. See DEC-027, Brief §6.2. |
 | **SE-7** | **LLM traceability + tool-call audit** | **P2 — Soon** | **Not Started** | 2 | — | — | S3-4 | NEW: Log every LLM call: provider, model, prompt (post-anonymisation), response, tool calls I/O, latency, tokens, validation pass/fail. Console-log in S2, Supabase table in S3. |
 | **AR-10** | **Evaluate MCP server for tools** | **P3 — Later** | **Not Started** | 2-3 | — | — | — | NEW: After Supabase migration, evaluate building an MCP server to expose financial tools (goal projections, signal queries, portfolio calcs) for use by any MCP-compatible agent. |
+| **AR-11** | **Cloudflare Worker proxy for LLM API keys** | **P2 — Soon** | **Not Started** | 2 | — | — | — | Required before any non-developer user is given access to the app. ~20-line Worker proxies LLM calls server-side; API key stored as Cloudflare secret, never reaches the browser. Trigger: multi-user launch decision. See DEC-036 (Cloudflare Worker proxy required before multi-user launch). |
+| **SW-11** | **Multi-turn chat memory** | **P1 — Next** | **DONE** | 1-2 | May 14, 2026 | May 14, 2026 | S2 | Full conversation history passed to Gemini on each call. `callLLM()` accepts a `history` array of `{role, text}` and maps to Gemini's contents array (ai → model). Portfolio context lives in systemInstruction (sent once per call, not duplicated across history). Synthetic UI messages (welcome, fallbacks) excluded via `synthetic` flag. 10 new tests in `llm.test.js`. |
+| **SW-12** | **Proportional scaling of monetary values in chat context** | **P1 — Next** | **DONE** | 1-2 | May 14, 2026 | May 14, 2026 | S2 | All rupee amounts in `buildContext()` divided by 1,000 before being sent to Gemini. Goal targets, per-fund SIPs, total monthly SIP all included as "units". Preserves relative magnitudes (ratios, allocations, required CAGR are scale-invariant) so Gemini can answer "is my SIP enough?" without seeing absolute rupees. System prompt explicitly tells Gemini values are in scaled units, not rupees. |
 
 # Recommended Build Sequence
 
