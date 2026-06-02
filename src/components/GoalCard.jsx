@@ -40,12 +40,15 @@ const STALENESS_MSG = {
   red: 'Corpus data is very outdated — projections may be inaccurate.',
 };
 
-export default function GoalCard({ goal, onEdit, onUpdateCorpus, onStatusChange }) {
+export default function GoalCard({ goal, onEdit, onUpdateCorpus, onStatusChange, onArchive, onRestore, isArchived }) {
   const [expanded, setExpanded] = useState(false);
   const health = computeGoalHealth(goal);
   const hc = HEALTH[health.status];
   const typeDef = GOAL_TYPES[goal.goalType];
   const bs = '0.5px solid var(--border)';
+
+  // SW-9: archived goals render dimmed with an "Archived" badge and Restore button.
+  // Health metrics still computed so user can see what they're restoring.
 
   // For amber goals, show top 2 levers by default; red shows all
   const maxLevers = expanded ? health.levers.length : (health.status === 'amber' ? 2 : health.levers.length);
@@ -58,9 +61,20 @@ export default function GoalCard({ goal, onEdit, onUpdateCorpus, onStatusChange 
     <div style={{
       background: 'var(--bg)', borderRadius: 'var(--radius-lg, 12px)',
       padding: '1rem', border: bs, position: 'relative',
-      opacity: isPaused ? 0.5 : 1,
+      opacity: isArchived ? 0.55 : isPaused ? 0.5 : 1,
       transition: 'opacity 0.2s',
     }}>
+      {/* SW-9: Archived badge sits above the goal label so the user always sees the state. */}
+      {isArchived && (
+        <div style={{
+          position: 'absolute', top: 10, right: 10,
+          padding: '2px 8px', borderRadius: 99, fontSize: 9, fontWeight: 500,
+          background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+          textTransform: 'uppercase', letterSpacing: '.05em',
+        }}>
+          🗄 Archived
+        </div>
+      )}
       {/* Header: emoji + name + badge */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -234,6 +248,26 @@ export default function GoalCard({ goal, onEdit, onUpdateCorpus, onStatusChange 
             border: '0.5px solid var(--border-strong)', background: 'transparent',
             color: 'var(--text-secondary)', cursor: 'pointer',
           }}>▶ Resume</button>
+        )}
+        {/* SW-9: Archive button. window.confirm guards against accidental clicks since
+            archived goals are hidden everywhere — not destructive but easy to miss. */}
+        {onArchive && !isArchived && (
+          <button onClick={() => {
+            if (window.confirm(`Archive "${goal.label}"? It will be hidden from signals, goal cards, and AI chat. You can restore it later from the archive view.`)) {
+              onArchive(goal.id);
+            }
+          }} style={{
+            padding: '4px 10px', borderRadius: 99, fontSize: 11,
+            border: '0.5px solid var(--border-strong)', background: 'transparent',
+            color: 'var(--text-secondary)', cursor: 'pointer', marginLeft: 'auto',
+          }}>🗄 Archive</button>
+        )}
+        {onRestore && isArchived && (
+          <button onClick={() => onRestore(goal.id)} style={{
+            padding: '4px 10px', borderRadius: 99, fontSize: 11,
+            border: '0.5px solid var(--border-strong)', background: '#EAF3DE',
+            color: '#3B6D11', cursor: 'pointer', fontWeight: 500,
+          }}>↺ Restore</button>
         )}
       </div>
     </div>

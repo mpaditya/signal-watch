@@ -1,5 +1,7 @@
 import GoalDashboard from './components/GoalDashboard';
 import DipPrioritisation from './components/DipPrioritisation';
+import LLMSettings from './components/LLMSettings';
+import ChatPanel from './components/ChatPanel';
 import{useState,useEffect,useMemo,useCallback}from'react'
 import{LineChart,Line,ResponsiveContainer,Tooltip}from'recharts'
 
@@ -49,6 +51,9 @@ const DEFAULT_GOALS={
 const STORAGE_KEY='artha_config_v1'
 // SW-3: Lump sum amount persisted to localStorage so user doesn't re-enter each visit
 const LUMP_SUM_STORAGE_KEY='artha_lump_sum'
+// SW-9: Array of goal IDs the user has archived. Soft-delete only — the underlying
+// goal data stays in goalsConfig so a restore brings everything back unchanged.
+const ABANDONED_STORAGE_KEY='artha_abandoned_goals'
 
 function loadConfig(){
   try{const s=localStorage.getItem(STORAGE_KEY);return s?JSON.parse(s):DEFAULT_GOALS}catch{return DEFAULT_GOALS}
@@ -61,6 +66,12 @@ function loadLumpSum(){
 }
 function saveLumpSum(val){
   try{localStorage.setItem(LUMP_SUM_STORAGE_KEY,JSON.stringify(val))}catch{}
+}
+function loadAbandoned(){
+  try{const s=localStorage.getItem(ABANDONED_STORAGE_KEY);return s?JSON.parse(s):[]}catch{return[]}
+}
+function saveAbandoned(ids){
+  try{localStorage.setItem(ABANDONED_STORAGE_KEY,JSON.stringify(ids))}catch{}
 }
 
 const fmtINR=n=>`₹${parseFloat(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`
@@ -173,7 +184,10 @@ function computeMetrics(raw,avgDays,dipPct){
   const hi=Math.max(...yr),lo=Math.min(...yr)
   const rangePct=hi===lo?50:Math.max(0,Math.min(100,(cur-lo)/(hi-lo)*100))
   const drawdownFrom52=(cur-hi)/hi*100
-  const signal=fromAvg<=-dipPct?SIG.dip:fromAvg<=-(dipPct/2)?SIG.watch:fromAvg>=dipPct?SIG.run:SIG.neutral
+  // DEC-039 (signal threshold tuning): Buy Dip at -dipPct, Watch in -dipPct/2 to -dipPct,
+  // Strong Run at +dipPct/2 (asymmetric — runs are confirmed sooner than dips).
+  // Default dipPct=4 → Buy Dip ≤-4%, Watch -2 to -4%, Neutral ±2%, Strong Run ≥+2%.
+  const signal=fromAvg<=-dipPct?SIG.dip:fromAvg<=-(dipPct/2)?SIG.watch:fromAvg>=dipPct/2?SIG.run:SIG.neutral
   const spark=raw.slice(0,60).reverse().map((d,i)=>({i,nav:parseFloat(d.nav),date:d.date}))
   const chart=raw.slice(0,365).reverse().map((d,i)=>({i,nav:parseFloat(d.nav),date:d.date}))
   return{cur,avg,fromAvg,hi,lo,rangePct,drawdownFrom52,signal,spark,chart,
@@ -359,7 +373,7 @@ export default function App(){
   const[fd,setFd]=useState({})
   const[st,setSt]=useState({})
   const[avgDays,setAvgDays]=useState(30)
-  const[dipPct,setDipPct]=useState(5)
+  const[dipPct,setDipPct]=useState(4)
   const[goal,setGoal]=useState('all')
   const[sel,setSel]=useState(null)
   const[rulesOpen,setRulesOpen]=useState(false)
@@ -372,11 +386,36 @@ export default function App(){
   // without duplicating the health computation logic here.
   const[healthMap,setHealthMap]=useState({})
   const[peStatus,setPeStatus]=useState('idle')
+  const[llmOpen,setLlmOpen]=useState(false)
+  // SW-9: Track archived goal IDs. Soft-delete — keeps underlying data intact for restore.
+  const[abandonedIds,setAbandonedIds]=useState(()=>loadAbandoned())
 
   // Persist config to localStorage whenever it changes
   useEffect(()=>saveConfig(goalsConfig),[goalsConfig])
   // SW-3: Persist lump sum to localStorage so it survives page reloads
   useEffect(()=>saveLumpSum(lumpSum),[lumpSum])
+  // SW-9: Persist archived goal IDs
+  useEffect(()=>saveAbandoned(abandonedIds),[abandonedIds])
+
+  // SW-9: archiveGoal/restoreGoal mutate the abandoned list. The goal data
+  // itself never changes — only the filter that decides whether to display it.
+  const archiveGoal=useCallback(gid=>{
+    setAbandonedIds(prev=>prev.includes(gid)?prev:[...prev,gid])
+  },[])
+  const restoreGoal=useCallback(gid=>{
+    setAbandonedIds(prev=>prev.filter(id=>id!==gid))
+  },[])
+
+  // SW-9: activeGoalsConfig is goalsConfig minus archived goals. Use this everywhere
+  // downstream (header pills, filter tabs, goals panel, fund cards, DipPrioritisation,
+  // ChatPanel). Keep raw goalsConfig only for setGoalsConfig and persistence.
+  const activeGoalsConfig=useMemo(()=>{
+    const out={}
+    Object.entries(goalsConfig).forEach(([gid,g])=>{
+      if(!abandonedIds.includes(gid))out[gid]=g
+    })
+    return out
+  },[goalsConfig,abandonedIds])
 
   const updateGoalField=(gid,field,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],[field]:['yearsLeft','targetLakh'].includes(field)?Number(val):val}}))
   const updateFundSIP=(gid,fid,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],funds:{...p[gid].funds,[fid]:Number(val)}}}))
@@ -437,11 +476,12 @@ export default function App(){
     return m
   },[fd,avgDays,dipPct])
 
-  // For new goals, fund-to-goal mapping is in goalsConfig[gid].funds (keys are fund IDs).
-  // For legacy goals, mapping is in FUNDS[].goals. Check both directions.
+  // For new goals, fund-to-goal mapping is in activeGoalsConfig[gid].funds (keys are fund IDs).
+  // For legacy goals, mapping is in FUNDS[].goals. Archived goals (SW-9) are excluded.
   const fundBelongsToGoal=(fund,gid)=>{
+    if(abandonedIds.includes(gid))return false
     if(fund.goals.includes(gid))return true
-    const gc=goalsConfig[gid]
+    const gc=activeGoalsConfig[gid]
     return gc?.funds?.[fund.id]!==undefined && gc.funds[fund.id]>0
   }
   const visible=goal==='all'?FUNDS:FUNDS.filter(f=>fundBelongsToGoal(f,goal))
@@ -461,8 +501,13 @@ export default function App(){
           {peStatus==='fallback'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#FAEEDA',color:'#854F0B'}}>P/E est.</span>}
           {Object.entries(sigCount).map(([id,count])=>{const s=SIG[id];if(!s||!count)return null;return<span key={id} style={{padding:'2px 9px',borderRadius:99,fontSize:11,fontWeight:500,background:s.bg,color:s.color}}>{count} {s.label}</span>})}
           {done.length<FUNDS.length&&<span style={{fontSize:11,color:'var(--text-secondary)'}}>Loading {done.length}/{FUNDS.length}…</span>}
+          <button onClick={()=>setLlmOpen(true)}
+            style={{padding:'3px 10px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:'var(--bg)',fontSize:11,color:'var(--text-secondary)',cursor:'pointer'}}>
+            AI
+          </button>
         </div>
       </nav>
+      {llmOpen&&<LLMSettings onClose={()=>setLlmOpen(false)}/>}
 
       <header style={{background:'var(--bg)',borderBottom:bs,padding:'1.25rem 1.5rem 1rem'}}>
         <div style={{maxWidth:960,margin:'0 auto'}}>
@@ -471,7 +516,7 @@ export default function App(){
           </div>
           <h1 style={{fontSize:26,fontWeight:600,letterSpacing:'-.02em',marginBottom:10}}>Portfolio Signals</h1>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {Object.entries(goalsConfig).map(([id,g])=>(
+            {Object.entries(activeGoalsConfig).map(([id,g])=>(
               <span key={id} style={{padding:'3px 11px',background:'var(--bg-secondary)',borderRadius:99,fontSize:12,color:'var(--text-secondary)'}}>
                 {g.emoji} {g.label} · <b style={{fontWeight:500}}>{g.yearsLeft}Y</b> · ₹{g.targetLakh}L
               </span>
@@ -488,7 +533,7 @@ export default function App(){
 
       <main style={{maxWidth:960,margin:'0 auto',padding:'1.25rem 1.5rem'}}>
         <div style={{display:'flex',gap:0,borderBottom:bs,marginBottom:14}}>
-          {[{id:'all',label:'All Funds',n:FUNDS.length},...Object.entries(goalsConfig).map(([gid,g])=>({id:gid,label:g.label,n:FUNDS.filter(f=>fundBelongsToGoal(f,gid)).length}))].map(t=>(
+          {[{id:'all',label:'All Funds',n:FUNDS.length},...Object.entries(activeGoalsConfig).map(([gid,g])=>({id:gid,label:g.label,n:FUNDS.filter(f=>fundBelongsToGoal(f,gid)).length}))].map(t=>(
             <button key={t.id} onClick={()=>{setGoal(t.id);setSel(null)}}
               style={{padding:'7px 14px',border:'none',background:'none',fontSize:13,color:goal===t.id?'var(--text-primary)':'var(--text-secondary)',fontWeight:goal===t.id?500:400,borderBottom:goal===t.id?'2px solid var(--text-primary)':'2px solid transparent',marginBottom:-0.5,cursor:'pointer'}}>
               {t.label} <span style={{fontSize:10,opacity:.55}}>({t.n})</span>
@@ -524,7 +569,7 @@ export default function App(){
         {goalsOpen&&(
           <div style={{marginBottom:14,padding:'1.1rem 1.25rem',background:'var(--bg)',borderRadius:'var(--radius-lg)',border:bs}}>
             <div style={{fontSize:11,fontWeight:500,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--text-secondary)',marginBottom:12}}>Goals, Targets & SIP Amounts</div>
-            {Object.entries(goalsConfig).map(([gid,g])=>(
+            {Object.entries(activeGoalsConfig).map(([gid,g])=>(
               <div key={gid} style={{marginBottom:16,paddingBottom:16,borderBottom:bs}}>
                 <div style={{fontSize:13,fontWeight:500,marginBottom:10}}>{g.emoji} {g.label}</div>
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
@@ -580,7 +625,7 @@ export default function App(){
               <div>
                 <div style={{fontSize:10,textTransform:'uppercase',letterSpacing:'.07em',color:'var(--text-secondary)',fontWeight:500,marginBottom:8}}>Dip Alert Threshold</div>
                 <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                  {[3,5,7,10,15].map(d=>(
+                  {[3,4,5,7,10].map(d=>(
                     <button key={d} onClick={()=>setDipPct(d)}
                       style={{padding:'4px 11px',borderRadius:99,border:'0.5px solid var(--border-strong)',background:dipPct===d?'#E24B4A':'transparent',color:dipPct===d?'white':'var(--text-secondary)',fontSize:12}}>{d}%</button>
                   ))}
@@ -590,7 +635,7 @@ export default function App(){
             <div style={{marginTop:12,padding:'8px 12px',background:'var(--bg-secondary)',borderRadius:'var(--radius-md)',fontSize:11,color:'var(--text-secondary)',lineHeight:1.7}}>
               🔴 <b style={{fontWeight:500}}>Buy Dip</b> = NAV &gt; {dipPct}% below {avgDays}d avg &nbsp;·&nbsp;
               🟡 <b style={{fontWeight:500}}>Watch</b> = {(dipPct/2).toFixed(1)}–{dipPct}% below &nbsp;·&nbsp;
-              🟢 <b style={{fontWeight:500}}>Strong Run</b> = &gt; {dipPct}% above avg
+              🟢 <b style={{fontWeight:500}}>Strong Run</b> = &gt; {(dipPct/2).toFixed(1)}% above avg
             </div>
           </div>
         )}
@@ -602,7 +647,7 @@ export default function App(){
           lumpSum={lumpSum}
           funds={FUNDS}
           metrics={metrics}
-          goalsConfig={goalsConfig}
+          goalsConfig={activeGoalsConfig}
           marketPE={marketPE}
           healthMap={healthMap}
         />
@@ -610,17 +655,31 @@ export default function App(){
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:12}}>
           {visible.map(fund=>(
             <Card key={fund.id} fund={fund} status={st[fund.id]||'loading'} m={metrics[fund.id]} data={fd[fund.id]}
-              isSel={sel===fund.id} avgDays={avgDays} dipPct={dipPct} goalsConfig={goalsConfig} marketPE={marketPE}
+              isSel={sel===fund.id} avgDays={avgDays} dipPct={dipPct} goalsConfig={activeGoalsConfig} marketPE={marketPE}
               onSelect={()=>setSel(sel===fund.id?null:fund.id)} onRetry={()=>loadFund(fund)}/>
           ))}
         </div>
 
-        <GoalDashboard goalsConfig={goalsConfig} funds={FUNDS} onUpdateGoalsConfig={setGoalsConfig} onHealthUpdate={setHealthMap} />
+        {/* SW-9: GoalDashboard receives the full goalsConfig (so it can render the archive view)
+            plus the archived ID list and archive/restore callbacks. */}
+        <GoalDashboard
+          goalsConfig={goalsConfig}
+          funds={FUNDS}
+          onUpdateGoalsConfig={setGoalsConfig}
+          onHealthUpdate={setHealthMap}
+          abandonedIds={abandonedIds}
+          onArchive={archiveGoal}
+          onRestore={restoreGoal}
+        />
       </main>
 
       <footer style={{padding:'1rem 1.5rem',marginTop:'1rem',borderTop:bs,textAlign:'center',fontSize:10,color:'var(--text-tertiary)',lineHeight:1.7}}>
         Data: mfapi.in · P/E: NSE India ({peStatus==='live'?'live':'estimated'}) · Informational only — not financial advice · Project Artha v3.0
       </footer>
+
+      {/* SW-4 (in-app chat panel): Floating AI chat. Uses activeGoalsConfig so archived goals
+          are not sent to Gemini. buildContext() anonymises fund names and scales rupees (SE-6 + SW-12). */}
+      <ChatPanel funds={FUNDS} metrics={metrics} goalsConfig={activeGoalsConfig} marketPE={marketPE} />
     </div>
   )
 }
