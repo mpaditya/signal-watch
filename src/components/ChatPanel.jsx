@@ -4,13 +4,20 @@ import { callLLM, hasLLMKey } from '../llm'
 // SE-6 (data minimisation for LLM prompts): the system prompt tells Gemini to never
 // echo fund names back, and to treat all monetary values as scaled "units" — not rupees.
 // The context we send also anonymises fund names + scales rupee amounts (see buildContext).
+// SW-13 (Google Search grounding): explicit rule telling Gemini when to invoke the
+// google_search tool — overrides the model's default tendency to trust context as fresh.
 const SYSTEM_PROMPT = `You are a personal finance assistant for an Indian mutual fund investor.
 Answer questions using the portfolio context provided. Follow these rules:
 - Never mention specific fund names — refer to them by category (small cap, mid cap, etc.) or the labels in the context (e.g., "Small Cap A").
 - Monetary values in the context are in scaled "units" (1 unit ≈ a private constant; ratios and relative magnitudes are accurate, absolute rupees are withheld). You may reference these units in your analysis but never call them rupees.
 - Always anchor recommendations to the investor's goal horizon.
 - Keep responses to 2-4 sentences unless the user asks for more detail.
-- End every response with one specific action the investor should take.`
+- End every response with one specific action the investor should take.
+- USE GOOGLE SEARCH (the google_search tool you have access to) whenever:
+  (a) the user asks about "current", "today's", "latest", or "live" market data;
+  (b) any value in the portfolio context is marked "(ESTIMATED FALLBACK)" — these are stale and you must verify the live value via search before reporting it;
+  (c) the user asks about recent fund news, market events, scheme manager changes, or anything that may have changed after your training data.
+  Do NOT search for advice-style questions (e.g., "should I lump-sum?", "is my SIP enough?") — answer those from the deterministic portfolio context.`
 
 // SE-6 (data minimisation) + SW-12 (proportional scaling of monetary values):
 // Build anonymised context string from live app state. Fund names → category labels
@@ -18,7 +25,7 @@ Answer questions using the portfolio context provided. Follow these rules:
 // magnitudes are preserved but absolute values are hidden.
 const SCALE = 1000  // ₹ → units. ₹5,000 SIP becomes "5 units/mo".
 
-function buildContext(funds, metrics, goalsConfig, marketPE) {
+function buildContext(funds, metrics, goalsConfig, marketPE, peStatus) {
   // Assign letter suffixes per category: first Small Cap = "Small Cap A", second = "Small Cap B"
   const categoryCount = {}
   const fundLabels = {}
@@ -56,10 +63,14 @@ function buildContext(funds, metrics, goalsConfig, marketPE) {
     .join('\n')
 
   const pe = marketPE
+  // SW-13 + DEC-043: tag P/E values with their freshness. NSE blocks browser CORS,
+  // so peStatus is often "fallback" (hardcoded estimates from weeks ago). Marking
+  // them explicitly tells Gemini to verify via Google Search instead of trusting.
+  const peTag = peStatus === 'live' ? '(NSE live)' : '(ESTIMATED FALLBACK — NSE blocked by CORS; may be weeks out of date — verify via Google Search if user asks about current values)'
   const peStr = [
-    pe.largecap ? `Nifty50 P/E: ${pe.largecap.toFixed(1)}` : null,
-    pe.midcap   ? `MidCap P/E: ${pe.midcap.toFixed(1)}`    : null,
-    pe.smallcap ? `SmallCap P/E: ${pe.smallcap.toFixed(1)}` : null,
+    pe.largecap ? `Nifty50 P/E: ${pe.largecap.toFixed(1)} ${peTag}` : null,
+    pe.midcap   ? `MidCap P/E: ${pe.midcap.toFixed(1)} ${peTag}`    : null,
+    pe.smallcap ? `SmallCap P/E: ${pe.smallcap.toFixed(1)} ${peTag}` : null,
   ].filter(Boolean).join(', ')
 
   return `Portfolio context (today):
@@ -75,7 +86,7 @@ const WELCOME      = "Ask me anything about your portfolio signals, goals, or in
 const NO_KEY_MSG   = "No Gemini API key set. Open AI Settings (top nav) to add one. Without it I can only answer with deterministic analysis from the app."
 const FALLBACK_MSG = "AI unavailable right now (network or rate limit). The app's deterministic analysis on each fund card is still accurate — refer to the verdict panels below each fund."
 
-export default function ChatPanel({ funds, metrics, goalsConfig, marketPE }) {
+export default function ChatPanel({ funds, metrics, goalsConfig, marketPE, peStatus }) {
   const [open, setOpen]         = useState(false)
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
@@ -119,7 +130,7 @@ export default function ChatPanel({ funds, metrics, goalsConfig, marketPE }) {
 
     // Portfolio context goes into systemInstruction (sent every call but not duplicated
     // across the contents array). System prompt + live context together = system role.
-    const context = buildContext(funds, metrics, goalsConfig, marketPE)
+    const context = buildContext(funds, metrics, goalsConfig, marketPE, peStatus)
     const systemPrompt = `${SYSTEM_PROMPT}\n\n${context}`
 
     // Debug: log exactly what gets sent to Gemini so the user can verify what context

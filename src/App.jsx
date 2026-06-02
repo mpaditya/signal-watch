@@ -679,7 +679,7 @@ export default function App(){
 
       {/* SW-4 (in-app chat panel): Floating AI chat. Uses activeGoalsConfig so archived goals
           are not sent to Gemini. buildContext() anonymises fund names and scales rupees (SE-6 + SW-12). */}
-      <ChatPanel funds={FUNDS} metrics={metrics} goalsConfig={activeGoalsConfig} marketPE={marketPE} />
+      <ChatPanel funds={FUNDS} metrics={metrics} goalsConfig={activeGoalsConfig} marketPE={marketPE} peStatus={peStatus} />
     </div>
   )
 }
