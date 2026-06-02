@@ -296,3 +296,68 @@ sequenceDiagram
 - Live NSE P/E via SW-7 (NSE P/E multi-source fallback) would remove the need for the `ESTIMATED FALLBACK` workaround for the largecap/smallcap P/E. The search-grounding pattern remains useful for fund news / market events though.
 
 ---
+
+## [2026-06-02] SW-7 (NSE P/E manual override) + SE-1 (Graceful API degradation)
+
+### What changed
+SW-7 adds a manual P/E override so the user can enter Nifty 50 / MC150 / SC250 P/E values from the NSE website, bypassing the CORS block that makes the NSE API unreachable from a browser. SE-1 adds a 10-second fetch timeout to mfapi.in calls and a prominent red banner when all fund cards have errored, giving the user a single "Retry all" button instead of needing to retry each card individually.
+
+### Files touched
+- `src/App.jsx` — (1) new PE_MANUAL_KEY constant + loadPEManual/savePEManual/clearPEManualStore helpers; (2) peManual state + peManualRef (useRef) to avoid stale closure in useCallback; (3) peOverrideOpen + peOverrideDraft for modal UI; (4) fetchMarketPE updated: tries NSE → checks peManualRef on failure → hardcoded fallback (June 2026 values); (5) savePEOverride / clearPEOverride / openPEOverride handlers; (6) "✎ P/E" toolbar button + "P/E manual ✎" clickable nav badge; (7) PE override modal JSX; (8) mfapiAllFailed derived boolean; (9) red banner with Retry all; (10) AbortSignal.timeout(10000) on both mfapi.in fetch calls.
+
+### Walkthrough (Python-developer framing)
+**The CORS problem:** The NSE India API blocks requests that come from a browser (any origin other than nseindia.com). This is CORS — Cross-Origin Resource Sharing. Think of it like an API that checks the `Referer` header and rejects you if you're not coming from its own website. Screener.in and Trendlyne have the same restriction, so a three-source cascade doesn't help. The fix without a backend is to let the user copy-paste values from the NSE website.
+
+**useRef to escape stale closure:** In Python, a closure captures a variable by reference — if the enclosing scope mutates the variable, the closure sees the new value. In JavaScript, `useState` is different: `useCallback` captures the state value *at the time it's created*, so if `peManual` changes, the old closure still holds the old value. The pattern to escape this: create a `useRef(peManual)` and update it every time peManual changes via a `useEffect`. Refs are mutable containers — reading `peManualRef.current` always gives the latest value, because you're reading the container, not a copy.
+
+**4-state P/E status machine:** `peStatus` is now a tiny state machine with four states: `idle` (never fetched), `loading` (fetch in flight), `live` (NSE succeeded — very rare due to CORS), `manual` (user-entered values), `fallback` (NSE failed, no manual override — uses hardcoded estimates). Each state has its own badge color: green for live, blue for manual, amber for fallback, grey for loading.
+
+**All-funds-failed detection:** `mfapiAllFailed` is a derived boolean computed every render: `visible.every(f => st[f.id] === 'error')`. This is the React equivalent of `all(status == 'error' for status in fund_statuses)`. When true, a banner appears above the fund grid. The "Retry all" button calls `FUNDS.forEach((f, i) => setTimeout(() => loadFund(f), i * 300))` — staggered 300ms delays to avoid hammering the API.
+
+**AbortSignal.timeout:** The browser's `fetch()` never times out by default. If mfapi.in hangs, the loading spinner would spin forever. `AbortSignal.timeout(10000)` creates a signal that fires after 10 seconds, which the fetch() interprets as an abort — the Promise rejects, the catch block runs, and `st[fund.id]` is set to `'error'`.
+
+### Data flow diagram
+```mermaid
+sequenceDiagram
+    participant User
+    participant App
+    participant LSt as localStorage
+    participant NSE as NSE India API
+    participant mfapi as mfapi.in
+
+    App->>LSt: loadPEManual() on mount
+    LSt-->>App: {largecap, midcap, smallcap} or null
+    App->>App: setMarketPE(manual || {}), setPeStatus('manual'|'idle')
+    App->>NSE: fetchMarketPE() → fetch with 5s timeout
+    NSE-->>App: CORS error (always fails from browser)
+    App->>App: peManualRef.current set? → setPeStatus('manual')
+    App->>App: else → setMarketPE(hardcoded), setPeStatus('fallback')
+
+    User->>App: click ✎ P/E → openPEOverride()
+    App->>App: setPeOverrideDraft(current values)
+    App->>App: setPeOverrideOpen(true) → modal renders
+    User->>App: types Nifty 50 / MC150 / SC250 values → Save
+    App->>App: savePEOverride() → validate parseFloat
+    App->>App: setMarketPE(vals), setPeStatus('manual')
+    App->>LSt: savePEManual(vals)
+
+    App->>mfapi: loadFund() × 8 funds, staggered 300ms, 10s timeout each
+    mfapi-->>App: NAV data or timeout error
+    App->>App: st[fund.id] = 'done' | 'error'
+    App->>App: mfapiAllFailed = visible.every(f => st[f.id]==='error')
+    App->>User: renders banner if mfapiAllFailed
+```
+
+### Mental models reinforced
+- **CORS is a browser security feature, not a server feature.** The server doesn't know or care — it's the *browser* that refuses to forward the response to your JS code when the CORS headers are missing. The same request works fine from Python/curl/Postman.
+- **useRef as a mutable escape hatch.** When you need a callback to always read the *current* value of a state variable without re-creating the callback every time the state changes, use a ref. Update the ref in a useEffect, read `ref.current` inside the callback.
+- **Derived state vs. computed-on-render.** `mfapiAllFailed` is not stored in useState — it's recomputed every render from `st` (the status map). In Python terms: it's a `@property`, not an instance variable. React encourages this — avoid storing derived values in state, since they can go out of sync.
+- **AbortSignal.timeout is the timeout you were always missing.** The native fetch API has no built-in timeout. AbortSignal.timeout() is the clean modern fix — no setTimeout + controller.abort() boilerplate.
+- **localStorage is synchronous, fetch is async.** Loading manual PE from localStorage on mount is instant (synchronous read), so we can use it as the useState initializer: `useState(() => loadPEManual() || {})`. This avoids a blank frame before the async NSE fetch completes.
+
+### Open questions
+- When the NSE CORS block eventually goes away (or AR-11 Cloudflare Worker is built), the manual override should still be honoured until the user explicitly clears it — does the current logic handle this? Yes: `fetchMarketPE` only overwrites with live data if NSE succeeds; manual is the fallback when NSE fails.
+- Should we show *when* the manual P/E was last set? Currently there's no timestamp. Could add `savedAt: Date.now()` to the stored object and show "set 3 days ago" in the badge.
+- The "Retry all" button uses the same staggered-setTimeout pattern as initial load. If the user clicks it twice rapidly, you'd get duplicate loads. Worth adding a guard (check if st[f.id] === 'loading' before firing) once this becomes a real usability issue.
+
+---

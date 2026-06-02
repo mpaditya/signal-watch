@@ -2,7 +2,7 @@ import GoalDashboard from './components/GoalDashboard';
 import DipPrioritisation from './components/DipPrioritisation';
 import LLMSettings from './components/LLMSettings';
 import ChatPanel from './components/ChatPanel';
-import{useState,useEffect,useMemo,useCallback}from'react'
+import{useState,useEffect,useMemo,useCallback,useRef}from'react'
 import{LineChart,Line,ResponsiveContainer,Tooltip}from'recharts'
 
 const FUNDS=[
@@ -54,6 +54,8 @@ const LUMP_SUM_STORAGE_KEY='artha_lump_sum'
 // SW-9: Array of goal IDs the user has archived. Soft-delete only — the underlying
 // goal data stays in goalsConfig so a restore brings everything back unchanged.
 const ABANDONED_STORAGE_KEY='artha_abandoned_goals'
+// SW-7: Manual P/E override — stores {largecap, midcap, smallcap} entered by user
+const PE_MANUAL_KEY='artha_pe_manual'
 
 function loadConfig(){
   try{const s=localStorage.getItem(STORAGE_KEY);return s?JSON.parse(s):DEFAULT_GOALS}catch{return DEFAULT_GOALS}
@@ -73,6 +75,10 @@ function loadAbandoned(){
 function saveAbandoned(ids){
   try{localStorage.setItem(ABANDONED_STORAGE_KEY,JSON.stringify(ids))}catch{}
 }
+// SW-7: Manual P/E helpers
+function loadPEManual(){try{const s=localStorage.getItem(PE_MANUAL_KEY);return s?JSON.parse(s):null}catch{return null}}
+function savePEManual(v){try{localStorage.setItem(PE_MANUAL_KEY,JSON.stringify(v))}catch{}}
+function clearPEManualStore(){try{localStorage.removeItem(PE_MANUAL_KEY)}catch{}}
 
 const fmtINR=n=>`₹${parseFloat(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`
 const fmtPct=(n,d=2)=>n==null?'--':(n>=0?'+':'')+parseFloat(n).toFixed(d)+'%'
@@ -380,13 +386,19 @@ export default function App(){
   const[goalsOpen,setGoalsOpen]=useState(false)
   const[goalsConfig,setGoalsConfig]=useState(()=>loadConfig())
   const[lumpSum,setLumpSum]=useState(()=>loadLumpSum())
-  const[marketPE,setMarketPE]=useState({})
+  // SW-7: initialise marketPE from manual override immediately so UI isn't blank on load
+  const[marketPE,setMarketPE]=useState(()=>loadPEManual()||{})
   // SW-3: healthMap is populated by GoalDashboard and passed to DipPrioritisation.
   // This lets the conviction scorer know which goals are on-track/off-track
   // without duplicating the health computation logic here.
   const[healthMap,setHealthMap]=useState({})
-  const[peStatus,setPeStatus]=useState('idle')
+  const[peStatus,setPeStatus]=useState(()=>loadPEManual()?'manual':'idle')
   const[llmOpen,setLlmOpen]=useState(false)
+  // SW-7: manual P/E override — lets user enter values from NSE India when CORS blocks live fetch
+  const[peManual,setPeManual]=useState(()=>loadPEManual())
+  const peManualRef=useRef(peManual)
+  const[peOverrideOpen,setPeOverrideOpen]=useState(false)
+  const[peOverrideDraft,setPeOverrideDraft]=useState({largecap:'',midcap:'',smallcap:''})
   // SW-9: Track archived goal IDs. Soft-delete — keeps underlying data intact for restore.
   const[abandonedIds,setAbandonedIds]=useState(()=>loadAbandoned())
 
@@ -396,6 +408,10 @@ export default function App(){
   useEffect(()=>saveLumpSum(lumpSum),[lumpSum])
   // SW-9: Persist archived goal IDs
   useEffect(()=>saveAbandoned(abandonedIds),[abandonedIds])
+  // SW-7: Keep ref current so fetchMarketPE can read peManual without re-creating the callback
+  useEffect(()=>{peManualRef.current=peManual},[peManual])
+  // SW-7: Persist manual P/E override; clear from localStorage when cleared by user
+  useEffect(()=>{if(peManual)savePEManual(peManual);else clearPEManualStore()},[peManual])
 
   // SW-9: archiveGoal/restoreGoal mutate the abandoned list. The goal data
   // itself never changes — only the filter that decides whether to display it.
@@ -421,11 +437,12 @@ export default function App(){
   const updateFundSIP=(gid,fid,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],funds:{...p[gid].funds,[fid]:Number(val)}}}))
   const updateSIPDate=(gid,fid,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],sipDates:{...p[gid].sipDates,[fid]:Number(val)}}}))
 
-  // Fetch market P/E from NSE with fallback to hardcoded recent values
+  // SW-7: Fetch market P/E — tries NSE India (usually CORS-blocked from browser),
+  // falls back to manual override if user has set one, otherwise uses hardcoded estimates.
   const fetchMarketPE=useCallback(async()=>{
     setPeStatus('loading')
     try{
-      // Try fetching Nifty P/E data from NSE India
+      // NSE India direct API — blocked by CORS in most browsers; attempt anyway for future-proofing
       const r=await fetch('https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050',{
         headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json'},
         signal:AbortSignal.timeout(5000)
@@ -434,29 +451,57 @@ export default function App(){
         const d=await r.json()
         const pe=d?.data?.[0]?.pe
         if(pe){
-          // NSE only gives Nifty 50; estimate others from historical ratio
+          // NSE only gives Nifty 50; estimate others from historical ratio (~1.45× and ~1.6×)
           setMarketPE({largecap:parseFloat(pe),midcap:parseFloat(pe)*1.45,smallcap:parseFloat(pe)*1.6})
           setPeStatus('live')
           return
         }
       }
     }catch{}
-    // Fallback: recent approximate values (updated periodically)
-    // As of April 2026 — update these quarterly
-    setMarketPE({largecap:22.5,midcap:32.8,smallcap:30.2})
+    // NSE failed — use manual override if user has entered values
+    if(peManualRef.current){setMarketPE(peManualRef.current);setPeStatus('manual');return}
+    // Final fallback: hardcoded estimates. Update quarterly.
+    // As of June 2026 — Nifty50 ~21.5, MC150 ~31.2 (1.45×), SC250 ~29.8 (1.6× adj)
+    setMarketPE({largecap:21.5,midcap:31.2,smallcap:29.8})
     setPeStatus('fallback')
   },[])
 
   useEffect(()=>{fetchMarketPE()},[fetchMarketPE])
 
+  // SW-7: Save manual P/E override and apply immediately
+  const savePEOverride=useCallback(()=>{
+    const vals={largecap:parseFloat(peOverrideDraft.largecap),midcap:parseFloat(peOverrideDraft.midcap),smallcap:parseFloat(peOverrideDraft.smallcap)}
+    if([vals.largecap,vals.midcap,vals.smallcap].some(isNaN))return
+    peManualRef.current=vals
+    setPeManual(vals)
+    setMarketPE(vals)
+    setPeStatus('manual')
+    setPeOverrideOpen(false)
+  },[peOverrideDraft])
+
+  // SW-7: Clear manual override and re-attempt NSE fetch (will fall back to hardcoded)
+  const clearPEOverride=useCallback(()=>{
+    peManualRef.current=null
+    setPeManual(null)
+    setPeOverrideOpen(false)
+    fetchMarketPE()
+  },[fetchMarketPE])
+
+  // SW-7: Open the manual P/E modal, pre-filling with current values
+  const openPEOverride=useCallback(()=>{
+    setPeOverrideDraft({largecap:marketPE.largecap?.toFixed(1)||'',midcap:marketPE.midcap?.toFixed(1)||'',smallcap:marketPE.smallcap?.toFixed(1)||''})
+    setPeOverrideOpen(true)
+  },[marketPE])
+
   const loadFund=useCallback(async fund=>{
     setSt(p=>({...p,[fund.id]:'loading'}))
     try{
-      const sr=await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(fund.searchQ)}`)
+      // SE-1: 10s timeout on both mfapi calls so a hung API surfaces as 'error', not infinite spinner
+      const sr=await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(fund.searchQ)}`,{signal:AbortSignal.timeout(10000)})
       const results=await sr.json()
       const match=results.find(r=>{const n=r.schemeName.toLowerCase();return n.includes('direct')&&n.includes('growth')&&!n.includes('dividend')})||results[0]
       if(!match)throw new Error('not found')
-      const nr=await fetch(`https://api.mfapi.in/mf/${match.schemeCode}`)
+      const nr=await fetch(`https://api.mfapi.in/mf/${match.schemeCode}`,{signal:AbortSignal.timeout(10000)})
       const nj=await nr.json()
       setFd(p=>({...p,[fund.id]:{schemeCode:match.schemeCode,schemeName:match.schemeName,rawData:nj.data}}))
       setSt(p=>({...p,[fund.id]:'done'}))
@@ -487,6 +532,8 @@ export default function App(){
   const visible=goal==='all'?FUNDS:FUNDS.filter(f=>fundBelongsToGoal(f,goal))
   const done=FUNDS.filter(f=>st[f.id]==='done')
   const sigCount=done.reduce((acc,f)=>{const s=metrics[f.id]?.signal;if(s)acc[s.id]=(acc[s.id]||0)+1;return acc},{})
+  // SE-1: detect when all visible funds have errored so we can show a prominent banner
+  const mfapiAllFailed=visible.length>0&&visible.every(f=>st[f.id]==='error')
   const bs='0.5px solid var(--border)'
 
   return(
@@ -498,7 +545,9 @@ export default function App(){
         </div>
         <div style={{display:'flex',gap:5,alignItems:'center',flexWrap:'wrap'}}>
           {peStatus==='live'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#EAF3DE',color:'#3B6D11'}}>P/E live</span>}
-          {peStatus==='fallback'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#FAEEDA',color:'#854F0B'}}>P/E est.</span>}
+          {peStatus==='manual'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#E6F1FB',color:'#185FA5',cursor:'pointer'}} onClick={openPEOverride}>P/E manual ✎</span>}
+          {peStatus==='fallback'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'#FAEEDA',color:'#854F0B'}}>P/E est. Jun 2026</span>}
+          {peStatus==='loading'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'var(--bg-secondary)',color:'var(--text-secondary)'}}>P/E …</span>}
           {Object.entries(sigCount).map(([id,count])=>{const s=SIG[id];if(!s||!count)return null;return<span key={id} style={{padding:'2px 9px',borderRadius:99,fontSize:11,fontWeight:500,background:s.bg,color:s.color}}>{count} {s.label}</span>})}
           {done.length<FUNDS.length&&<span style={{fontSize:11,color:'var(--text-secondary)'}}>Loading {done.length}/{FUNDS.length}…</span>}
           <button onClick={()=>setLlmOpen(true)}
@@ -553,6 +602,11 @@ export default function App(){
           <button onClick={fetchMarketPE}
             style={{display:'flex',alignItems:'center',gap:6,padding:'5px 13px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:'var(--bg)',fontSize:12,color:'var(--text-secondary)'}}>
             ↻ Refresh P/E
+          </button>
+          {/* SW-7: manual P/E override button — NSE is CORS-blocked in browser */}
+          <button onClick={openPEOverride}
+            style={{display:'flex',alignItems:'center',gap:4,padding:'5px 11px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:'var(--bg)',fontSize:12,color:'var(--text-secondary)'}}>
+            ✎ P/E
           </button>
           {/* SW-3: Lump sum input — user enters available amount to deploy across Buy Dip signals.
               Persisted in localStorage so it survives page reloads. When non-zero, the
@@ -652,6 +706,20 @@ export default function App(){
           healthMap={healthMap}
         />
 
+        {/* SE-1: banner when mfapi.in is unreachable and all fund cards have errored */}
+        {mfapiAllFailed&&(
+          <div style={{marginBottom:12,padding:'10px 14px',background:'#FFF3F3',border:'0.5px solid #F5C2C2',borderRadius:'var(--radius-lg)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+            <div>
+              <div style={{fontSize:12,fontWeight:500,color:'#A32D2D'}}>NAV data unavailable</div>
+              <div style={{fontSize:11,color:'#A32D2D',marginTop:2,opacity:.8}}>mfapi.in may be down or rate-limiting. Signals cannot be computed.</div>
+            </div>
+            <button onClick={()=>FUNDS.forEach((f,i)=>setTimeout(()=>loadFund(f),i*300))}
+              style={{flexShrink:0,padding:'5px 12px',border:'0.5px solid #F5C2C2',borderRadius:99,background:'white',color:'#A32D2D',fontSize:11,cursor:'pointer'}}>
+              Retry all
+            </button>
+          </div>
+        )}
+
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:12}}>
           {visible.map(fund=>(
             <Card key={fund.id} fund={fund} status={st[fund.id]||'loading'} m={metrics[fund.id]} data={fd[fund.id]}
@@ -674,12 +742,53 @@ export default function App(){
       </main>
 
       <footer style={{padding:'1rem 1.5rem',marginTop:'1rem',borderTop:bs,textAlign:'center',fontSize:10,color:'var(--text-tertiary)',lineHeight:1.7}}>
-        Data: mfapi.in · P/E: NSE India ({peStatus==='live'?'live':'estimated'}) · Informational only — not financial advice · Project Artha v3.0
+        Data: mfapi.in · P/E: NSE India ({peStatus==='live'?'live':peStatus==='manual'?'manual override':peStatus==='fallback'?'est. Jun 2026':'loading'}) · Informational only — not financial advice · Project Artha v3.0
       </footer>
 
       {/* SW-4 (in-app chat panel): Floating AI chat. Uses activeGoalsConfig so archived goals
           are not sent to Gemini. buildContext() anonymises fund names and scales rupees (SE-6 + SW-12). */}
       <ChatPanel funds={FUNDS} metrics={metrics} goalsConfig={activeGoalsConfig} marketPE={marketPE} peStatus={peStatus} />
+
+      {/* SW-7: Manual P/E override modal — NSE India is CORS-blocked from the browser.
+          User can look up current P/E on NSE website and enter values here. Stored in localStorage. */}
+      {peOverrideOpen&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.45)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:'1rem'}}
+          onClick={()=>setPeOverrideOpen(false)}>
+          <div style={{background:'var(--bg)',borderRadius:'var(--radius-lg)',padding:'1.5rem',width:'100%',maxWidth:340,boxShadow:'0 8px 32px rgba(0,0,0,0.18)'}}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>Set P/E manually</div>
+            <div style={{fontSize:11,color:'var(--text-secondary)',marginBottom:16,lineHeight:1.6}}>
+              NSE India is blocked in browser (CORS). Find current P/E on{' '}
+              <a href="https://www.nseindia.com/market-data/live-equity-market?symbol=NIFTY%2050"
+                target="_blank" rel="noreferrer" style={{color:'var(--text-primary)'}}>NSE India → Indices</a>.
+            </div>
+            {[{key:'largecap',label:'Nifty 50 P/E',hint:'e.g. 21.5'},{key:'midcap',label:'Nifty MC150 P/E',hint:'e.g. 31.2'},{key:'smallcap',label:'Nifty SC250 P/E',hint:'e.g. 29.8'}].map(({key,label,hint})=>(
+              <div key={key} style={{marginBottom:12}}>
+                <div style={{fontSize:10,color:'var(--text-secondary)',marginBottom:4}}>{label}</div>
+                <input type="number" step="0.1" min="1" max="200" value={peOverrideDraft[key]} placeholder={hint}
+                  onChange={e=>setPeOverrideDraft(p=>({...p,[key]:e.target.value}))}
+                  style={{width:'100%',padding:'6px 10px',border:'0.5px solid var(--border-strong)',borderRadius:'var(--radius-md)',fontSize:13,fontWeight:500,background:'var(--bg)',color:'var(--text-primary)',boxSizing:'border-box'}}/>
+              </div>
+            ))}
+            <div style={{display:'flex',gap:8,marginTop:4}}>
+              <button onClick={savePEOverride}
+                style={{flex:1,padding:'7px',background:'var(--text-primary)',color:'var(--bg)',border:'none',borderRadius:'var(--radius-md)',fontSize:12,fontWeight:500,cursor:'pointer'}}>
+                Save
+              </button>
+              <button onClick={()=>setPeOverrideOpen(false)}
+                style={{flex:1,padding:'7px',background:'transparent',color:'var(--text-secondary)',border:'0.5px solid var(--border-strong)',borderRadius:'var(--radius-md)',fontSize:12,cursor:'pointer'}}>
+                Cancel
+              </button>
+            </div>
+            {peManual&&(
+              <button onClick={clearPEOverride}
+                style={{width:'100%',marginTop:10,padding:'5px',background:'transparent',color:'#A32D2D',border:'none',fontSize:11,cursor:'pointer'}}>
+                Clear override — use estimated values
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

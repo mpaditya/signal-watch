@@ -43,7 +43,7 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **SW-4** | **In-app chat panel** | **P1 — Next** | **DONE** | 1-2 | May 14, 2026 | May 14, 2026 | S2 | Floating 💬 chat panel (`ChatPanel.jsx`). Sends anonymised portfolio context to Gemini via `callLLM()`. Deterministic fallback when no key / API error. SE-6 data minimisation implemented inline (fund names replaced with category labels, no rupee amounts in prompts). SE-5 response validation deferred — chat gives advice, not specific numbers. |
 | **SW-5** | **Category comparison** | **P2 — Soon** | **Not Started** | 1 | — | — | — | Compare 1M/3M return vs category average. |
 | **SW-6** | **Goal type-specific glide path** | **P2 — Soon** | **Not Started** | 1 | — | — | — | Different derisking per goal type. Equity cutoff per Brief §4.2. |
-| **SW-7** | **NSE P/E multi-source fallback** | **P3 — Later** | **Not Started** | 1 | — | — | — | Try Screener.in, Trendlyne before estimated values. |
+| **SW-7** | **NSE P/E multi-source fallback** | **P3 — Later** | **DONE** | 1 | Jun 2, 2026 | Jun 2, 2026 | S2 | CORS blocks all third-party sources from browser. Implemented: manual P/E override modal (✎ P/E button), stored in `artha_pe_manual` localStorage key. fallback values updated to Jun 2026. peStatus now has 4 states: live/manual/fallback/loading. DEC-044. |
 | **SW-8** | **Email alert: per-signal toggle** | **P3 — Later** | **LIVE** | 1 | Mar 26 | Mar 26 | v3 | Per-fund mute is live. Consider per-signal-type toggles. |
 | **SW-9** | **Goal abandon/archive** | **P2 — Soon** | **Not Started** | 1 | — | — | S2 | Soft delete via status=abandoned. Hard delete deferred to AR-1. |
 | **SW-10** | **HashRouter for multi-page navigation** | **P1 — Next** | **Not Started** | 1-2 | — | — | S2 | GitHub Pages returns 404 on direct URL navigation with BrowserRouter. Switch to HashRouter BEFORE adding chat panel or other routes. See Brief 3.5 friction #2. DEC-035. |
@@ -81,7 +81,7 @@ Grouped by functional area. Sprint assignments: S1 = current, S2–S5 = planned.
 | **UX-3** | **WhatsApp bot for alerts** | **P4 — Future** | **Not Started** | 3-4 | — | — | — | Twilio / WhatsApp Business API. |
 | **UX-4** | **Dark/light theme toggle** | **P3 — Later** | **Not Started** | 1 | — | — | — | CSS variables exist. Add user toggle. |
 | **SECURITY ****&**** RESILIENCE** |
-| **SE-1** | **Graceful degradation for APIs** | **P1 — Next** | **In Progress** | 1 | Mar 26 | — | S2 | mfapi.in, NSE, Claude API must fail gracefully. Partially done for P/E. |
+| **SE-1** | **Graceful degradation for APIs** | **P1 — Next** | **DONE** | 1 | Mar 26 | Jun 2, 2026 | S2 | mfapi.in: 10s AbortSignal.timeout added, all-funds-failed banner with Retry all. NSE P/E: 4-state badge (live/manual/fallback/loading) + manual override modal (SW-7). Gemini: already handled by callLLM() null return + ChatPanel fallback messages (SW-4). |
 | **SE-2** | **Rate limiting on Claude API** | **P2 — Soon** | **Not Started** | 2 | — | — | S4 | Hard cap on daily API calls. Prevent runaway costs. |
 | **SE-3** | **Data export / backup** | **P2 — Soon** | **Not Started** | 2 | — | — | S3 | One-click export to JSON. Essential before DB migration. |
 | **SE-4** | **Content Security Policy** | **P3 — Later** | **Not Started** | 2 | — | — | — | Netlify headers for XSS protection. |
