@@ -42,10 +42,11 @@ async function callLLM(prompt, options = {}) {
 
   const {
     systemPrompt,
-    history     = [],
-    temperature = DEFAULT_TEMPERATURE,
-    topP        = DEFAULT_TOP_P,
-    maxTokens   = DEFAULT_MAX_TOKENS,
+    history       = [],
+    temperature   = DEFAULT_TEMPERATURE,
+    topP          = DEFAULT_TOP_P,
+    maxTokens     = DEFAULT_MAX_TOKENS,
+    enableSearch  = false,
   } = options
   const t0 = Date.now()
 
@@ -63,6 +64,9 @@ async function callLLM(prompt, options = {}) {
     if (systemPrompt) {
       body.systemInstruction = { parts: [{ text: systemPrompt }] }
     }
+    if (enableSearch) {
+      body.tools = [{ google_search: {} }]
+    }
 
     const res = await fetch(`${GEMINI_URL}?key=${key}`, {
       method: 'POST',
@@ -79,14 +83,22 @@ async function callLLM(prompt, options = {}) {
     }
 
     const json = await res.json()
-    const text = json.candidates?.[0]?.content?.parts?.[0]?.text ?? null
+    const candidate = json.candidates?.[0]
+    const text = candidate?.content?.parts?.[0]?.text ?? null
     const tokens = {
       input:  json.usageMetadata?.promptTokenCount     ?? 0,
       output: json.usageMetadata?.candidatesTokenCount ?? 0,
     }
 
+    // SW-13: extract grounding metadata when Gemini invoked Google Search
+    const groundingChunks = candidate?.groundingMetadata?.groundingChunks ?? []
+    const usedSearch = groundingChunks.length > 0
+    const citations = groundingChunks
+      .map(c => c?.web ? { uri: c.web.uri, title: c.web.title } : null)
+      .filter(Boolean)
+
     if (!text) return null
-    return { text, provider: 'gemini', model: GEMINI_MODEL, tokens }
+    return { text, provider: 'gemini', model: GEMINI_MODEL, tokens, usedSearch, citations }
 
   } catch (err) {
     return null
@@ -304,6 +316,85 @@ function makeCaptureFetch(captureRef) {
       cap.body.contents.map(c => c.parts[0].text).join(',') === 'q1,a1,q2,a2,q3',
       'text order preserved verbatim'
     )
+  }
+
+  // ── SW-13 (Google Search grounding): tool wiring + citation extraction ──
+  console.log('\ncallLLM — SW-13 Google Search Grounding:')
+  {
+    setLLMKey('AIzaTestKey')
+    const cap = {}
+
+    // Default behaviour: no tools field when enableSearch not set
+    global.fetch = makeCaptureFetch(cap)
+    await callLLM('plain question')
+    assert(cap.body?.tools === undefined, 'no tools field by default (enableSearch defaults false)')
+
+    // enableSearch: false explicitly → still no tools
+    global.fetch = makeCaptureFetch(cap)
+    await callLLM('plain question', { enableSearch: false })
+    assert(cap.body?.tools === undefined, 'no tools field when enableSearch=false')
+
+    // enableSearch: true → google_search tool declared in request body
+    global.fetch = makeCaptureFetch(cap)
+    await callLLM('what is Nifty P/E today?', { enableSearch: true })
+    assert(Array.isArray(cap.body?.tools), 'tools array present when enableSearch=true')
+    assert(cap.body.tools.length === 1, 'tools array has exactly one entry')
+    assert(cap.body.tools[0]?.google_search !== undefined, 'tools[0] declares google_search')
+
+    // Response WITHOUT groundingMetadata → usedSearch=false, citations=[]
+    global.fetch = async () => ({
+      ok: true, status: 200,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: 'no search needed' }] } }],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
+      }),
+    })
+    const r1 = await callLLM('hello', { enableSearch: true })
+    assert(r1?.usedSearch === false, 'usedSearch false when Gemini chose not to invoke search')
+    assert(Array.isArray(r1?.citations) && r1.citations.length === 0, 'citations empty when no search')
+
+    // Response WITH groundingMetadata → usedSearch=true, citations populated
+    global.fetch = async () => ({
+      ok: true, status: 200,
+      json: async () => ({
+        candidates: [{
+          content: { parts: [{ text: 'Nifty P/E is currently 22.8.' }] },
+          groundingMetadata: {
+            groundingChunks: [
+              { web: { uri: 'https://nseindia.com/abc',     title: 'NSE Nifty 50 P/E' } },
+              { web: { uri: 'https://moneycontrol.com/xyz', title: 'Market Valuations' } },
+            ],
+          },
+        }],
+        usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 20 },
+      }),
+    })
+    const r2 = await callLLM('current Nifty P/E?', { enableSearch: true })
+    assert(r2?.usedSearch === true, 'usedSearch true when Gemini invoked search')
+    assert(r2?.citations?.length === 2, 'two citations extracted')
+    assert(r2.citations[0].uri === 'https://nseindia.com/abc', 'citation 0 uri correct')
+    assert(r2.citations[0].title === 'NSE Nifty 50 P/E', 'citation 0 title correct')
+    assert(r2.citations[1].uri === 'https://moneycontrol.com/xyz', 'citation 1 uri correct')
+
+    // Malformed groundingChunks (missing web key) → filtered out, no crash
+    global.fetch = async () => ({
+      ok: true, status: 200,
+      json: async () => ({
+        candidates: [{
+          content: { parts: [{ text: 'partial' }] },
+          groundingMetadata: {
+            groundingChunks: [
+              { web: { uri: 'https://valid.com', title: 'Valid' } },
+              { other: 'unknown' },
+              null,
+            ],
+          },
+        }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2 },
+      }),
+    })
+    const r3 = await callLLM('test', { enableSearch: true })
+    assert(r3?.citations?.length === 1, 'malformed chunks filtered, only valid web entries kept')
   }
 
   // ─── Summary ─────────────────────────────────────────────────────────────

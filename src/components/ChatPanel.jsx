@@ -122,10 +122,24 @@ export default function ChatPanel({ funds, metrics, goalsConfig, marketPE }) {
     const context = buildContext(funds, metrics, goalsConfig, marketPE)
     const systemPrompt = `${SYSTEM_PROMPT}\n\n${context}`
 
-    const result = await callLLM(text, { systemPrompt, history })
+    // Debug: log exactly what gets sent to Gemini so the user can verify what context
+    // is being passed (open DevTools → Console to inspect). Helps diagnose stale-data
+    // questions ("did Gemini even get my latest P/E?").
+    console.log('[chat] systemPrompt sent to Gemini:\n' + systemPrompt)
+    console.log('[chat] history turns:', history.length, '· current user message:', text)
+
+    // SW-13 (Google Search grounding for chat panel): enable Gemini's google_search
+    // tool so it can fetch current data when the question needs it (e.g. "Nifty P/E
+    // today"). Tool use is conditional — Gemini decides per turn whether to invoke.
+    const result = await callLLM(text, { systemPrompt, history, enableSearch: true })
 
     if (result?.text) {
-      setMessages(prev => [...prev, { role: 'ai', text: result.text }])
+      setMessages(prev => [...prev, {
+        role: 'ai',
+        text: result.text,
+        usedSearch: result.usedSearch,
+        citations: result.citations,
+      }])
     } else {
       setMessages(prev => [...prev, { role: 'ai', text: FALLBACK_MSG, synthetic: true }])
     }
@@ -179,8 +193,8 @@ export default function ChatPanel({ funds, metrics, goalsConfig, marketPE }) {
           }}>
             {messages.map((msg, i) => (
               <div key={i} style={{
-                display: 'flex',
-                justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                display: 'flex', flexDirection: 'column',
+                alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start',
               }}>
                 <div style={{
                   maxWidth: '82%', padding: '8px 11px',
@@ -194,6 +208,25 @@ export default function ChatPanel({ funds, metrics, goalsConfig, marketPE }) {
                 }}>
                   {msg.text}
                 </div>
+                {/* SW-13: Show "Searched the web" badge + citation list under AI messages
+                    where Gemini actually invoked Google Search. Lets the user verify sources. */}
+                {msg.usedSearch && msg.citations?.length > 0 && (
+                  <div style={{
+                    maxWidth: '82%', marginTop: 4, padding: '6px 10px',
+                    background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)',
+                    fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.55,
+                  }}>
+                    <div style={{ fontWeight: 500, marginBottom: 3 }}>🔍 Searched the web · {msg.citations.length} source{msg.citations.length > 1 ? 's' : ''}</div>
+                    {msg.citations.slice(0, 5).map((c, ci) => (
+                      <div key={ci} style={{ marginTop: 2 }}>
+                        <a href={c.uri} target="_blank" rel="noopener noreferrer"
+                          style={{ color: '#185FA5', textDecoration: 'none' }}>
+                          {ci + 1}. {c.title || c.uri.replace(/^https?:\/\//, '').slice(0, 50)}
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
 
