@@ -88,6 +88,36 @@ function clearPEManualStore(){try{localStorage.removeItem(PE_MANUAL_KEY)}catch{}
 function loadPECache(){try{const s=localStorage.getItem(PE_CACHE_KEY);return s?JSON.parse(s):null}catch{return null}}
 function savePECache(v){try{localStorage.setItem(PE_CACHE_KEY,JSON.stringify({values:v,savedAt:Date.now()}))}catch{}}
 
+// SE-3: Export all portfolio data from localStorage to a dated JSON file.
+// Excludes artha_gemini_key — API keys must never leave the browser as a file.
+// The exported file is a complete snapshot: import it back manually via browser
+// DevTools → Application → Local Storage if you ever need to restore.
+const DATA_EXPORT_KEYS=[
+  STORAGE_KEY,            // artha_config_v1  — fund configs
+  LUMP_SUM_STORAGE_KEY,   // artha_lump_sum   — lump sum amount
+  ABANDONED_STORAGE_KEY,  // artha_abandoned_goals
+  PE_MANUAL_KEY,          // artha_pe_manual
+  PE_CACHE_KEY,           // artha_pe_cache
+  'artha_goal_corpus',    // GoalDashboard corpus amounts per goal
+  'artha_goals_v4',       // GoalDashboard extra goals
+  'artha_goals',          // goalUtils goals
+  'artha_schema_version', // goalUtils schema version
+]
+function exportData(){
+  const snapshot={}
+  DATA_EXPORT_KEYS.forEach(k=>{
+    const v=localStorage.getItem(k)
+    if(v!==null)snapshot[k]=JSON.parse(v)
+  })
+  const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),version:1,data:snapshot},null,2)],{type:'application/json'})
+  const url=URL.createObjectURL(blob)
+  const a=document.createElement('a')
+  a.href=url
+  a.download=`artha-backup-${new Date().toISOString().slice(0,10)}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 const fmtINR=n=>`₹${parseFloat(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`
 const fmtPct=(n,d=2)=>n==null?'--':(n>=0?'+':'')+parseFloat(n).toFixed(d)+'%'
 const pctClr=n=>n==null?'var(--text-secondary)':n>=0?'#3B6D11':'#A32D2D'
@@ -596,6 +626,11 @@ export default function App(){
           {peStatus==='loading'&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:99,background:'var(--bg-secondary)',color:'var(--text-secondary)'}}>P/E …</span>}
           {Object.entries(sigCount).map(([id,count])=>{const s=SIG[id];if(!s||!count)return null;return<span key={id} style={{padding:'2px 9px',borderRadius:99,fontSize:11,fontWeight:500,background:s.bg,color:s.color}}>{count} {s.label}</span>})}
           {done.length<FUNDS.length&&<span style={{fontSize:11,color:'var(--text-secondary)'}}>Loading {done.length}/{FUNDS.length}…</span>}
+          <button onClick={exportData}
+            title="Export all portfolio data to JSON (backup before Supabase migration)"
+            style={{padding:'3px 10px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:'var(--bg)',fontSize:11,color:'var(--text-secondary)',cursor:'pointer'}}>
+            ↓ Export
+          </button>
           <button onClick={()=>setLlmOpen(true)}
             style={{padding:'3px 10px',border:'0.5px solid var(--border-strong)',borderRadius:99,background:'var(--bg)',fontSize:11,color:'var(--text-secondary)',cursor:'pointer'}}>
             AI

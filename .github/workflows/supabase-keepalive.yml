@@ -1,0 +1,96 @@
+# SE-8: Supabase keep-alive ping
+#
+# Supabase free tier pauses the DB after 7 days of inactivity.
+# This workflow pings both the REST API and the Edge Functions runtime
+# every 5 days so the project never goes dormant.
+#
+# Required GitHub secrets (set these before AR-1 Supabase migration):
+#   SUPABASE_URL      — e.g. https://xyzabc.supabase.co
+#   SUPABASE_ANON_KEY — public anon key from Project Settings → API
+#
+# The ping uses the Supabase REST health endpoint (/rest/v1/) which
+# returns 200 without touching any user data — it just keeps the DB warm.
+# Edge Functions ping hits /functions/v1/keepalive (create a minimal
+# function for this once AR-1 is live).
+
+name: Supabase Keep-Alive
+
+on:
+  schedule:
+    # Run at 08:30 UTC every 5 days (days 1, 6, 11, 16, 21, 26, 31)
+    # Cron doesn't support "every N days" natively; we approximate with
+    # a daily check and an early-exit step on non-target days.
+    # Simpler alternative: run every Monday + Thursday (twice a week,
+    # well within the 7-day inactivity window). That's what we do here.
+    - cron: '30 8 * * 1,4'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual trigger'
+        required: false
+        default: 'Manual keep-alive test'
+
+jobs:
+  ping:
+    name: Ping Supabase REST + Edge Functions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check secrets are configured
+        run: |
+          if [ -z "$SUPABASE_URL" ]; then
+            echo "⚠️  SUPABASE_URL secret not set — Supabase not yet provisioned."
+            echo "    Set this secret after completing AR-1 (Supabase migration)."
+            echo "    Exiting early with success so the workflow doesn't spam failures."
+            exit 0
+          fi
+          echo "✅ SUPABASE_URL is configured. Proceeding with ping."
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+
+      - name: Ping Supabase REST API (DB keep-alive)
+        if: ${{ env.SUPABASE_URL != '' }}
+        run: |
+          echo "Pinging REST API at ${SUPABASE_URL}/rest/v1/"
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            "${SUPABASE_URL}/rest/v1/")
+
+          echo "HTTP status: ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "✅ REST API ping succeeded (${HTTP_STATUS})"
+          else
+            echo "❌ REST API ping failed (${HTTP_STATUS})"
+            exit 1
+          fi
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Ping Supabase Edge Functions runtime (optional)
+        if: ${{ env.SUPABASE_URL != '' }}
+        # This step is soft-fail: Edge Functions may not exist until AR-3/AR-4.
+        # We log the result but don't fail the workflow if it returns 404.
+        run: |
+          echo "Pinging Edge Function at ${SUPABASE_URL}/functions/v1/keepalive"
+          HTTP_STATUS=$(curl -s -o response.txt -w "%{http_code}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            "${SUPABASE_URL}/functions/v1/keepalive" || echo "000")
+
+          echo "HTTP status: ${HTTP_STATUS}"
+          cat response.txt || true
+
+          if [ "$HTTP_STATUS" = "404" ]; then
+            echo "⚠️  keepalive Edge Function not yet deployed (404) — expected until AR-3 ships."
+          elif [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "✅ Edge Function ping succeeded"
+          else
+            echo "⚠️  Edge Function ping returned ${HTTP_STATUS} — non-fatal"
+          fi
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Log completion
+        run: echo "Keep-alive run complete at $(date -u '+%Y-%m-%d %H:%M UTC')"
