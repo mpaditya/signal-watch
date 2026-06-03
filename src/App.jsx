@@ -449,7 +449,9 @@ export default function App(){
   // or null on any failure. Only runs if user has configured a Gemini API key.
   const fetchMarketPEViaLLM=useCallback(async()=>{
     if(!hasLLMKey())return null
-    const prompt=`Using Google Search, find the CURRENT P/E (Price-to-Earnings) ratio for these NSE India indices: Nifty 50, Nifty Midcap 150, Nifty Smallcap 250, Nifty 500. Use today's most recent data. Return ONLY a valid JSON object, no other text: {"largecap":<Nifty50_PE>,"midcap":<NiftyMC150_PE>,"smallcap":<NiftySC250_PE>,"nifty500":<Nifty500_PE>}`
+    // Explicitly request trailing P/E (TTM) — NOT forward P/E — so all cascade sources
+    // use the same definition. NSE India always reports trailing; we must match that here.
+    const prompt=`Using Google Search, find the CURRENT trailing P/E ratio (TTM — trailing twelve months, NOT forward P/E) for these NSE India stock indices: Nifty 50, Nifty Midcap 150, Nifty Smallcap 250, Nifty 500. Use today's most recent official data from NSE India or a reliable financial source. Return ONLY a valid JSON object with no other text: {"largecap":<Nifty50_trailing_PE>,"midcap":<NiftyMC150_trailing_PE>,"smallcap":<NiftySC250_trailing_PE>,"nifty500":<Nifty500_trailing_PE>}`
     const resp=await callLLM(prompt,{enableSearch:true,maxTokens:60,temperature:0.1})
     if(!resp?.text)return null
     try{
