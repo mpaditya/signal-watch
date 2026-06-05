@@ -323,13 +323,21 @@ export default function GoalDashboard({
   }, [corpusData, onUpdateGoalsConfig]);
 
   // ── Status Change (extra goals only) ────────────────────────────
+  // SW-14: when Supabase is configured, also persists status to the goals table.
+  // For localStorage fallback: 'achieved' goals are treated like 'abandoned' — added
+  // to abandonedIds so they disappear from the active view.
   const handleStatusChange = useCallback((goalId, newStatus) => {
     setExtraGoals(prev => {
       const updated = prev.map(g => g.id === goalId ? { ...g, status: newStatus } : g);
       saveExtraGoals(updated);
       return updated;
     });
-  }, []);
+    // SW-14: When a goal is marked achieved, archive it from the active view.
+    // Treat 'achieved' the same as 'abandoned' in the local filter.
+    if ((newStatus === GOAL_STATUSES.ACHIEVED || newStatus === GOAL_STATUSES.ABANDONED) && onArchive) {
+      onArchive(goalId);
+    }
+  }, [onArchive]);
 
   // ── Fund list for GoalForm ──────────────────────────────────────
   // Pass 'index' so GoalForm can derive the CAGR suggestion from the fund's benchmark index.

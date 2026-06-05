@@ -92,11 +92,15 @@ export const GOAL_TYPES = {
 };
 
 // ─── Goal Statuses ─────────────────────────────────────────────────
+// SW-14: Added ACHIEVED status. Mirrors the Supabase goals table enum:
+// active | paused | abandoned | achieved.
+// COMPLETED is kept as an alias for backwards compatibility with existing stored goals.
 export const GOAL_STATUSES = {
-  ACTIVE: 'active',
-  PAUSED: 'paused',
-  COMPLETED: 'completed',
+  ACTIVE:    'active',
+  PAUSED:    'paused',
+  COMPLETED: 'completed',  // legacy alias — treat same as ACHIEVED in UI
   ABANDONED: 'abandoned',
+  ACHIEVED:  'achieved',   // SW-14: user explicitly marks goal as achieved
 };
 
 // ─── Health Thresholds (Brief §4.3) ────────────────────────────────
