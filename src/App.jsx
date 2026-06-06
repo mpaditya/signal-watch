@@ -14,7 +14,8 @@ import{
   verifyMagicLinkToken,migrateLocalStorageToSupabase,
   // AR-1 write-through/read-back: cloud config helpers (aliased to avoid clashing with
   // App.jsx's own local loadConfig/saveConfig localStorage helpers below).
-  fetchConfig as cloudFetchConfig, saveConfig as cloudSaveConfig
+  fetchConfig as cloudFetchConfig, saveConfig as cloudSaveConfig,
+  upsertGoal as cloudUpsertGoal
 }from'./supabase'
 // AR-4: Decision queue flush on auth
 import{flushDecisionQueue,logDecision,ACTION_TYPES}from'./decisions'
@@ -588,7 +589,13 @@ export default function App(){
     saveConfig(goalsConfig) // immediate local cache
     if(isSupabaseConfigured()&&isAuthenticated()){
       clearTimeout(cloudSaveTimer.current)
-      cloudSaveTimer.current=setTimeout(()=>{cloudSaveConfig(goalsConfig)},1500)
+      cloudSaveTimer.current=setTimeout(()=>{
+        cloudSaveConfig(goalsConfig) // full blob to the config table
+        // Also keep the normalized goals table live (one row per goal), so it reflects
+        // edits without needing a manual "Migrate to Cloud". cache:false avoids polluting
+        // the artha_goals_v4 extra-goals localStorage cache with primary goals.
+        Object.entries(goalsConfig).forEach(([gid,g])=>{cloudUpsertGoal({id:gid,...g},{cache:false})})
+      },1500)
     }
   },[goalsConfig])
   // SW-3: Persist lump sum to localStorage so it survives page reloads

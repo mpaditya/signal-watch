@@ -288,4 +288,25 @@ describe('supabase.js — authenticated requests use the user access_token (RLS)
     expect(body.label).toBeUndefined()  // raw key not sent (would 400)
     mod.clearSession()
   })
+
+  // Token-expiry guard: a 401 should trigger a refresh + one retry, not a silent failure.
+  it('refreshes the access_token and retries once on a 401', async () => {
+    const mod = await import('./supabase.js')
+    mod.setSession({ access_token: 'expired', refresh_token: 'refresh-1', user: { id: 'u1' } })
+    let decisionCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (url, _opts) => {
+      if (url.includes('/auth/v1/token')) {
+        // refresh endpoint hands back a fresh token
+        return { ok: true, status: 200, json: async () => ({ access_token: 'fresh', refresh_token: 'refresh-2' }) }
+      }
+      decisionCalls++
+      if (decisionCalls === 1) return { ok: false, status: 401, text: async () => 'JWT expired' }
+      return { ok: true, status: 200, json: async () => [{ id: 'd1' }] }
+    }))
+    const { error } = await mod.insertDecision({ action_type: 'BUY_DIP' })
+    expect(error).toBeNull()                          // succeeded after refresh
+    expect(mod.getSession().access_token).toBe('fresh') // session updated
+    expect(decisionCalls).toBe(2)                      // original + one retry
+    mod.clearSession()
+  })
 })

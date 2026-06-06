@@ -50,13 +50,48 @@ async function supabaseRequest(method, table, body = null, params = '') {
   const opts = { method, headers }
   if (body) opts.body = JSON.stringify(body)
 
-  const res = await fetch(url, opts)
+  let res = await fetch(url, opts)
+  // Access tokens expire (~1h). On a 401, try a one-time refresh using the stored
+  // refresh_token, then retry the request with the new token. Without this, every
+  // write/read silently failed once the token aged out and decisions piled up offline.
+  if (res.status === 401 && getSession()?.refresh_token) {
+    const refreshed = await refreshSession()
+    if (refreshed) {
+      opts.headers.Authorization = `Bearer ${getSession().access_token}`
+      res = await fetch(url, opts)
+    }
+  }
   if (!res.ok) {
     const err = await res.text().catch(() => res.statusText)
     throw new Error(`Supabase ${method} ${table}: HTTP ${res.status} — ${err}`)
   }
   // DELETE returns 204 No Content; everything else returns JSON
   return res.status === 204 ? null : res.json()
+}
+
+// Exchange the stored refresh_token for a fresh access_token (Supabase token rotation).
+// Returns true on success (session updated in place), false otherwise.
+export async function refreshSession() {
+  const rt = getSession()?.refresh_token
+  if (!isSupabaseConfigured() || !rt) return false
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: { 'apikey': SUPABASE_ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: rt }),
+    })
+    if (!res.ok) return false
+    const json = await res.json()
+    if (!json.access_token) return false
+    setSession({
+      access_token:  json.access_token,
+      refresh_token: json.refresh_token || rt,
+      user: getSession()?.user || { id: json.user?.id, email: json.user?.email },
+    })
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
@@ -206,14 +241,18 @@ export function goalToRow(goal) {
   }
 }
 
-export async function upsertGoal(goal) {
-  // Always write to localStorage (write-through cache — DEC-048)
-  try {
-    const existing = JSON.parse(localStorage.getItem('artha_goals_v4') || '[]')
-    const idx = existing.findIndex(g => g.id === goal.id)
-    if (idx >= 0) existing[idx] = goal; else existing.push(goal)
-    localStorage.setItem('artha_goals_v4', JSON.stringify(existing))
-  } catch {}
+export async function upsertGoal(goal, { cache = true } = {}) {
+  // Write to the localStorage extra-goals cache (write-through, DEC-048) — UNLESS the
+  // caller is syncing primary goalsConfig goals to the goals table, in which case we must
+  // not pollute artha_goals_v4 with them (cache:false).
+  if (cache) {
+    try {
+      const existing = JSON.parse(localStorage.getItem('artha_goals_v4') || '[]')
+      const idx = existing.findIndex(g => g.id === goal.id)
+      if (idx >= 0) existing[idx] = goal; else existing.push(goal)
+      localStorage.setItem('artha_goals_v4', JSON.stringify(existing))
+    } catch {}
+  }
 
   if (!isSupabaseConfigured() || !isAuthenticated()) return { data: goal, error: null }
   try {
@@ -335,7 +374,22 @@ export async function migrateLocalStorageToSupabase() {
     if (cfg) await saveConfig(JSON.parse(cfg))
   } catch (e) { errors.push(`config: ${e.message}`) }
 
-  // Migrate goals (artha_goals_v4)
+  // Migrate PRIMARY goals (artha_config_v1 — retirement, education, etc., the goals the
+  // user actually edits). These were previously only saved to the config blob, leaving the
+  // goals table empty. Now also upsert each as a normalized row (cache:false so we don't
+  // duplicate them into the artha_goals_v4 extra-goals cache).
+  try {
+    const cfg = localStorage.getItem('artha_config_v1')
+    if (cfg) {
+      const goalsConfig = JSON.parse(cfg)
+      for (const [id, g] of Object.entries(goalsConfig)) {
+        const { error } = await upsertGoal({ id, ...g }, { cache: false })
+        if (error) errors.push(`goal ${id}: ${error}`)
+      }
+    }
+  } catch (e) { errors.push(`primary goals: ${e.message}`) }
+
+  // Migrate EXTRA goals (artha_goals_v4 — created via "+ New Goal", v4 schema)
   try {
     const goals = localStorage.getItem('artha_goals_v4')
     if (goals) {
