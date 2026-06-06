@@ -250,7 +250,9 @@ export default function GoalDashboard({
 
   // ── Corpus Update ───────────────────────────────────────────────
   const openCorpusUpdate = useCallback((goalId) => {
-    setCorpusInput(corpusData[goalId]?.amount || '');
+    // Prefill in ₹ Lakhs (stored value is rupees).
+    const amt = corpusData[goalId]?.amount;
+    setCorpusInput(amt ? String(amt / 100000) : '');
     setCorpusGoalId(goalId);
   }, [corpusData]);
 
@@ -260,7 +262,8 @@ export default function GoalDashboard({
       ...corpusData,
       [corpusGoalId]: {
         ...corpusData[corpusGoalId],
-        amount: parseFloat(corpusInput) || 0,
+        // Input is entered in ₹ LAKHS (consistent with the target field). Store rupees.
+        amount: (parseFloat(corpusInput) || 0) * 100000,
         updatedAt: new Date().toISOString().slice(0, 10),
       },
     };
@@ -614,13 +617,14 @@ export default function GoalDashboard({
             </div>
 
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginBottom: 4 }}>Amount (₹)</div>
+              <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginBottom: 4 }}>Amount (₹ Lakh)</div>
               <input
                 type="number"
                 value={corpusInput}
                 onChange={e => setCorpusInput(e.target.value)}
-                placeholder="e.g., 350000"
+                placeholder="e.g., 3.5"
                 min="0"
+                step="0.1"
                 autoFocus
                 style={{
                   width: '100%', padding: '8px 10px',
@@ -632,7 +636,7 @@ export default function GoalDashboard({
               />
               {corpusInput && parseFloat(corpusInput) > 0 && (
                 <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 4 }}>
-                  = ₹{(parseFloat(corpusInput) / 100000).toFixed(1)} Lakhs
+                  = ₹{(parseFloat(corpusInput) * 100000).toLocaleString('en-IN')}
                 </div>
               )}
             </div>
