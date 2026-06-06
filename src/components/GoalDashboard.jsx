@@ -185,8 +185,19 @@ export default function GoalDashboard({
     const legacy = Object.entries(goalsConfig || {}).map(([gid, g]) =>
       legacyToV4(gid, g, corpusData)
     );
+    // Merge corpusData into extra (v4) goals the same way legacyToV4 does for legacy goals.
+    // BUG FIX: without this, the "Update Corpus" modal (which writes to corpusData) had no
+    // effect on a created goal's card — "Invested" stayed at the creation-time value (₹0)
+    // and the progress bar never moved, because the card read currentCorpus straight off the
+    // stored extraGoals object instead of the latest corpusData.
     const extras = extraGoals
-      .filter(g => g.status === GOAL_STATUSES.ACTIVE && !configKeys.has(g.id));
+      .filter(g => g.status === GOAL_STATUSES.ACTIVE && !configKeys.has(g.id))
+      .map(g => ({
+        ...g,
+        currentCorpus: corpusData[g.id]?.amount ?? g.currentCorpus ?? 0,
+        corpusUpdatedAt: corpusData[g.id]?.updatedAt ?? g.corpusUpdatedAt ?? null,
+        assumedCAGR: corpusData[g.id]?.assumedCAGR ?? g.assumedCAGR,
+      }));
     const all = [...legacy, ...extras];
     const abandonedSet = new Set(abandonedIds);
     return {
