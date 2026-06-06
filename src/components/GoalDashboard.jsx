@@ -351,6 +351,25 @@ export default function GoalDashboard({
     }
   }, [onArchive]);
 
+  // SW-14 fix: restoring an archived/achieved goal must reset its status back to
+  // ACTIVE. Otherwise a goal achieved earlier still has status='achieved' after
+  // restore, which hides the Pause and Achieved buttons (they key off status).
+  // Resets status in BOTH stores (legacy corpus + v4 extraGoals), then removes the
+  // goal from the archived list via the parent's onRestore.
+  const handleRestore = useCallback((goalId) => {
+    setCorpusData(prev => {
+      const updated = { ...prev, [goalId]: { ...prev[goalId], status: GOAL_STATUSES.ACTIVE } };
+      saveCorpusData(updated);
+      return updated;
+    });
+    setExtraGoals(prev => {
+      const updated = prev.map(g => g.id === goalId ? { ...g, status: GOAL_STATUSES.ACTIVE } : g);
+      saveExtraGoals(updated);
+      return updated;
+    });
+    if (onRestore) onRestore(goalId);
+  }, [onRestore]);
+
   // ── Fund list for GoalForm ──────────────────────────────────────
   // Pass 'index' so GoalForm can derive the CAGR suggestion from the fund's benchmark index.
   // index values match INDEX_HISTORICAL_CAGR keys in goalUtils.js: 'largecap', 'midcap', 'smallcap', null (arbitrage).
@@ -469,7 +488,7 @@ export default function GoalDashboard({
                   key={goal.id}
                   goal={goal}
                   isArchived={true}
-                  onRestore={onRestore}
+                  onRestore={handleRestore}
                 />
               ))}
             </div>
