@@ -411,9 +411,21 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
   const isFixed = GOAL_TYPES[goalType]?.isFixed;
   const priority = leverPriorityForGoalType(goalType);
 
+  // SW-16: the gap is measured against the COMPOSITE projection (`projected`), which already
+  // includes RD/FD instruments. The levers below close THIS gap with an EXTRA MF SIP / lump
+  // sum at the goal's equity rate. Previously they recomputed from projectCorpus(corpus, SIP)
+  // and ignored instruments — so an FD/RD-funded goal looked like it had saved ₹0.
+  const gap = targetINR - projected;
+
   const leverCalculators = {
     increaseSIP: () => {
-      const extra = additionalSIPNeeded(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft, targetINR);
+      if (gap <= 0 || yearsLeft <= 0) return null;
+      // Extra monthly SIP whose future value (annuity-due, proper compounding) closes the gap.
+      const r = annualToMonthlyRate(assumedCAGR);
+      const n = Math.round(yearsLeft * 12);
+      if (n <= 0) return null;
+      const sipMult = r === 0 ? n : ((Math.pow(1 + r, n) - 1) / r) * (1 + r);
+      const extra = Math.ceil(gap / sipMult);
       if (extra <= 0) return null;
       return {
         key: 'increaseSIP',
@@ -426,6 +438,9 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
     extendTimeline: () => {
       // Don't suggest for emergency fund or truly fixed-deadline goals with short horizon
       if (goalType === 'emergency') return null;
+      // SW-16: extending time only helps if there's an ongoing MF contribution to keep growing.
+      // A goal funded purely by RD/FD (no MF SIP/corpus) can't be helped by waiting longer.
+      if (currentCorpus === 0 && totalMonthlySIP === 0) return null;
       const extraMonths = extraMonthsNeeded(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft, targetINR);
       if (extraMonths === null || extraMonths <= 0) return null;
       const extraYrs = Math.floor(extraMonths / 12);
@@ -447,8 +462,8 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
     },
     reduceTarget: () => {
       if (isFixed === true) return null; // never for education, retirement, emergency
-      const achievable = achievableCorpus(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft);
-      const achievableLakh = Math.round(achievable / 100000);
+      // What you'll actually reach = the composite projection (incl. RD/FD instruments).
+      const achievableLakh = Math.round(projected / 100000);
       const targetLakh = Math.round(targetINR / 100000);
       if (achievableLakh >= targetLakh) return null;
       const contextMap = {
@@ -466,7 +481,9 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
       };
     },
     lumpSum: () => {
-      const needed = lumpSumNeeded(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft, targetINR);
+      // A one-time investment today, grown at the equity rate, that closes the composite gap.
+      if (gap <= 0) return null;
+      const needed = yearsLeft <= 0 ? Math.ceil(gap) : Math.ceil(gap / Math.pow(1 + assumedCAGR / 100, yearsLeft));
       if (needed <= 0) return null;
       return {
         key: 'lumpSum',
@@ -477,6 +494,8 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
       };
     },
     higherReturn: () => {
+      // SW-16: raising the equity return only matters if there's MF money to grow.
+      if (currentCorpus === 0 && totalMonthlySIP === 0) return null;
       const neededRate = higherReturnProjection(currentCorpus, totalMonthlySIP, yearsLeft, targetINR);
       if (neededRate === null) return null;
       if (neededRate <= assumedCAGR) return null; // already assuming enough

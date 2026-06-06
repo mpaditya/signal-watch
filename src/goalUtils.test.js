@@ -259,6 +259,24 @@ describe('SW-16 composite projection — per-instrument returns (MF + RD + FD)',
     expectClose(projectGoalComposite(goal, 5), expected, 0.5)
   })
 
+  it('off-track levers measure the gap against the composite projection (incl. instruments)', () => {
+    // Car goal: ₹27L target in ~1.5Y, funded ENTIRELY by an FD maturing before target.
+    // No MF SIP, no MF corpus. Projection ≈ FD maturity (~₹23L), so the gap is ~₹4L, NOT ₹27L.
+    const goal = {
+      goalType: 'car', assumedCAGR: 10, currentCorpus: 0, targetLakh: 27,
+      targetDate: isoIn(1.5), funds: {},
+      instruments: [{ type: 'FD', principal: 2000000, rate: 8.25, startDate: isoIn(-0.5), maturityDate: isoIn(1), maturityAmount: 2300000 }],
+    }
+    const h = computeGoalHealth(goal)
+    expect(h.projected).toBeGreaterThan(2000000)          // composite sees the FD (~₹23L), not 0
+    const sipLever = h.levers.find(l => l.key === 'increaseSIP')
+    const reduceLever = h.levers.find(l => l.key === 'reduceTarget')
+    // Extra SIP closes only the ~₹4L gap → a few tens of thousands/mo, NOT ₹1L+/mo.
+    if (sipLever) expect(sipLever.value).toBeLessThan(50000)
+    // "Reach" reflects the real projection (~₹23L), not ₹0L.
+    if (reduceLever) expect(reduceLever.value).toBeGreaterThan(20)
+  })
+
   it('blendedReturn is contribution-weighted across instruments', () => {
     // MF SIP ₹10k @13% + RD ₹10k @7% → blended 10%
     const goal = { assumedCAGR: 13, currentCorpus: 0, funds: { a: { monthlySIP: 10000, rate: 13 } }, instruments: [{ type: 'RD', monthly: 10000, rate: 7 }] }
