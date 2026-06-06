@@ -159,7 +159,16 @@ export default function GoalDashboard({
     const all = [...legacy, ...extras];
     const abandonedSet = new Set(abandonedIds);
     return {
-      activeGoals:   all.filter(g => !abandonedSet.has(g.id)),
+      // SW-14 self-heal: the abandoned-list (owned by App.jsx) is the source of truth for
+      // "is this goal archived". So any goal NOT in that list is active by definition — even
+      // if a stale 'achieved'/'abandoned' status lingers in storage from a pre-fix restore.
+      // Normalize it to ACTIVE so the Pause/Achieved buttons render correctly. (A genuine
+      // PAUSED status is preserved — only the two archived states are coerced.)
+      activeGoals: all
+        .filter(g => !abandonedSet.has(g.id))
+        .map(g => (g.status === GOAL_STATUSES.ACHIEVED || g.status === GOAL_STATUSES.ABANDONED)
+          ? { ...g, status: GOAL_STATUSES.ACTIVE }
+          : g),
       archivedGoals: all.filter(g =>  abandonedSet.has(g.id)),
     };
   }, [goalsConfig, corpusData, extraGoals, abandonedIds]);
