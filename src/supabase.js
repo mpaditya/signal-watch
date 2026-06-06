@@ -28,9 +28,15 @@ export function isSupabaseConfigured() {
 // Python analogy: this is like requests.Session() pre-loaded with auth headers.
 async function supabaseRequest(method, table, body = null, params = '') {
   const url = `${SUPABASE_URL}/rest/v1/${table}${params}`
+  // Authenticate as the logged-in USER (their access_token), not the anon role, so
+  // Postgres sees auth.uid() = their id and RLS policies (auth.uid() = user_id) pass.
+  // Fall back to the anon key only when there's no session (unauthenticated reads).
+  // BUG FIX: this previously always sent the anon key, so every authenticated
+  // INSERT/UPDATE was rejected by RLS and silently fell back to the offline queue.
+  const token = getSession()?.access_token ?? SUPABASE_ANON
   const headers = {
     'apikey':        SUPABASE_ANON,
-    'Authorization': `Bearer ${SUPABASE_ANON}`,
+    'Authorization': `Bearer ${token}`,
     'Content-Type':  'application/json',
     'Prefer':        method === 'POST' ? 'return=representation' : '',
   }

@@ -200,3 +200,50 @@ describe('supabase.js — migration helper', () => {
     expect(Array.isArray(result.errors)).toBe(true)
   })
 })
+
+// ─── Authenticated request auth header (RLS regression guard) ──────────────────
+// This block would have caught the bug where every authenticated write used the anon
+// key instead of the user's access_token, causing RLS to silently reject inserts.
+// It loads a FRESH module instance with real env vars so isSupabaseConfigured() is true.
+describe('supabase.js — authenticated requests use the user access_token (RLS)', () => {
+  beforeEach(() => {
+    vi.resetModules() // force module re-eval so it captures the stubbed env below
+    vi.stubEnv('VITE_SUPABASE_URL', 'https://test.supabase.co')
+    vi.stubEnv('VITE_SUPABASE_ANON_KEY', 'anon-key-123')
+    localStorage.clear()
+  })
+  afterEach(() => {
+    vi.resetModules()      // drop the configured instance so other files get a clean module
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  })
+
+  it('insertDecision sends Bearer <user access_token>, not the anon key', async () => {
+    const mod = await import('./supabase.js')
+    mod.setSession({ access_token: 'user-jwt-xyz', user: { id: 'u1', email: 'a@b.com' } })
+    let captured
+    vi.stubGlobal('fetch', vi.fn(async (_url, opts) => {
+      captured = opts.headers
+      return { ok: true, status: 200, json: async () => [{ id: 'd1' }] }
+    }))
+    await mod.insertDecision({ action_type: 'BUY_DIP', fund_name: 'Small Cap A' })
+    // The fix: Authorization carries the USER token so auth.uid() = user_id passes RLS.
+    expect(captured.Authorization).toBe('Bearer user-jwt-xyz')
+    // apikey stays the anon key (Supabase requires it on every request)
+    expect(captured.apikey).toBe('anon-key-123')
+    mod.clearSession()
+  })
+
+  it('insertDecision attaches the authenticated user_id to the row', async () => {
+    const mod = await import('./supabase.js')
+    mod.setSession({ access_token: 'user-jwt-xyz', user: { id: 'user-42', email: 'a@b.com' } })
+    let body
+    vi.stubGlobal('fetch', vi.fn(async (_url, opts) => {
+      body = JSON.parse(opts.body)
+      return { ok: true, status: 200, json: async () => [{ id: 'd1' }] }
+    }))
+    await mod.insertDecision({ action_type: 'GOAL_ACHIEVE', notes: 'done' })
+    expect(body.user_id).toBe('user-42')
+    mod.clearSession()
+  })
+})

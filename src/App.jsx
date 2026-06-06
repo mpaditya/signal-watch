@@ -531,6 +531,14 @@ export default function App(){
     }
   },[]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // AR-4: Drain any queued decisions whenever we have an authenticated session.
+  // Covers the rehydrated-session reload case (no magic-link hash in the URL), not just
+  // fresh logins. Runs when authReady flips true. Safe to run repeatedly — the queue
+  // helper no-ops on an empty queue.
+  useEffect(()=>{
+    if(isSupabaseConfigured()&&isAuthenticated())flushDecisionQueue()
+  },[authReady])
+
   // AR-2: Auth callbacks
   const handleAuthSuccess=useCallback(()=>{
     setAuthReady(true)
