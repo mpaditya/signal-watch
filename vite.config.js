@@ -13,19 +13,10 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test-setup.js'],
+    // Run every *.test.{js,jsx} under src/. All test files now use vitest's
+    // describe/it/expect and import the REAL modules (no inline copies).
+    include: ['src/**/*.test.{js,jsx}'],
     // Exclude stray agent worktrees + build output from the test run.
     exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],
-    // NOTE: goalUtils.test.js and llm.test.js are intentionally NOT in `include`.
-    // They are legacy "standalone node script" tests that (a) use a homegrown
-    // console.log harness instead of vitest's describe/it, and (b) goalUtils.test.js
-    // tests INLINE COPIES of the functions rather than importing goalUtils.js — so it
-    // provides zero regression protection for the real module. Both need rewriting to
-    // import the real modules under vitest. Tracked as a follow-up. Until then, `npm test`
-    // runs only the real vitest suites so green means something.
-    include: [
-      'src/decisions.test.js',
-      'src/supabase.test.js',
-      'src/**/*.vtest.{js,jsx}',
-    ],
   },
 });

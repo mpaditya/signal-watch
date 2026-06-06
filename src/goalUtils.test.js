@@ -1,581 +1,201 @@
-/**
- * goalUtils.test.js — Tests for Project Artha Goal Engine
- * 
- * Validates all financial math, off-track engine, and migration logic.
- * Run with: node goalUtils.test.js
- * 
- * These tests use plain assertions (no framework dependency).
- * Financial calculations are validated against known correct values.
- */
+// goalUtils.test.js — Tests for the Project Artha goal/financial engine.
+//
+// REWRITTEN (Sprint 3): now imports the REAL functions from ./goalUtils.js.
+// Previously this file COPIED every function inline ("copied for standalone testing")
+// and tested the copies — so the actual financial math (compounding, projections,
+// required CAGR, conviction scoring) had ZERO regression protection. A bug in the real
+// module could not be caught. These tests now exercise the shipped code directly.
+//
+// Financial values are validated against hand-computed expected results.
 
-// Since we're testing in Node without module bundler,
-// we'll simulate the functions inline for validation.
-// In the actual project, import from '../goalUtils'.
+import { describe, it, expect } from 'vitest'
+import {
+  annualToMonthlyRate,
+  futureValueLumpSum,
+  futureValueSIP,
+  projectCorpus,
+  requiredCAGR,
+  additionalSIPNeeded,
+  lumpSumNeeded,
+  healthStatus,
+  computeConvictionScore,
+  allocateLumpSum,
+  getHorizonBucket,
+  computeSuggestedCAGR,
+} from './goalUtils.js'
 
-// ─── Financial Math (copied for standalone testing) ────────────────
-
-function annualToMonthlyRate(annualPct) {
-  return Math.pow(1 + annualPct / 100, 1 / 12) - 1;
+// Assert `actual` is within `tolPct` percent of `expected`.
+function expectClose(actual, expected, tolPct) {
+  const diff = Math.abs(actual - expected)
+  const pctDiff = expected !== 0 ? (diff / Math.abs(expected)) * 100 : diff
+  expect(pctDiff, `expected ~${expected}, got ${actual} (${pctDiff.toFixed(3)}% off)`).toBeLessThanOrEqual(tolPct)
 }
 
-function futureValueLumpSum(presentValue, annualCAGR, years) {
-  if (years <= 0 || presentValue <= 0) return presentValue;
-  return presentValue * Math.pow(1 + annualCAGR / 100, years);
-}
+describe('annualToMonthlyRate — proper compounding (design principle #9)', () => {
+  it('12% annual → ~0.949% monthly', () => expectClose(annualToMonthlyRate(12) * 100, 0.9489, 1))
+  it('0% annual → 0% monthly', () => expect(annualToMonthlyRate(0)).toBe(0))
+  it('7% annual → ~0.565% monthly', () => expectClose(annualToMonthlyRate(7) * 100, 0.5654, 2))
+})
 
-function futureValueSIP(monthlySIP, annualCAGR, years) {
-  if (years <= 0 || monthlySIP <= 0) return 0;
-  const r = annualToMonthlyRate(annualCAGR);
-  const n = Math.round(years * 12);
-  if (r === 0) return monthlySIP * n;
-  return monthlySIP * ((Math.pow(1 + r, n) - 1) / r) * (1 + r);
-}
+describe('futureValueLumpSum', () => {
+  it('₹1L at 12% for 20Y ≈ ₹9.65L', () => expectClose(futureValueLumpSum(100000, 12, 20), 964629, 0.5))
+  it('₹5L at 10% for 10Y ≈ ₹12.97L', () => expectClose(futureValueLumpSum(500000, 10, 10), 1296871, 0.5))
+  it('₹0 corpus → ₹0', () => expect(futureValueLumpSum(0, 12, 20)).toBe(0))
+  it('0 years → returns present value', () => expect(futureValueLumpSum(100000, 12, 0)).toBe(100000))
+})
 
-function projectCorpus(currentCorpus, totalMonthlySIP, annualCAGR, yearsLeft) {
-  return futureValueLumpSum(currentCorpus, annualCAGR, yearsLeft) +
-         futureValueSIP(totalMonthlySIP, annualCAGR, yearsLeft);
-}
+describe('futureValueSIP — annuity-due, proper compounding', () => {
+  it('₹10K/mo at 12% for 20Y ≈ ₹92.0L', () => expectClose(futureValueSIP(10000, 12, 20), 9198574, 1))
+  it('₹5K/mo at 10% for 10Y ≈ ₹10.1L', () => expectClose(futureValueSIP(5000, 10, 10), 1007288, 2))
+  it('₹0 SIP → ₹0', () => expect(futureValueSIP(0, 12, 20)).toBe(0))
+  it('0 years → ₹0', () => expect(futureValueSIP(10000, 12, 0)).toBe(0))
+  it('₹10K/mo at 0% for 5Y = ₹6L (pure savings)', () => expect(futureValueSIP(10000, 0, 5)).toBe(600000))
+})
 
-function requiredCAGR(currentCorpus, totalMonthlySIP, targetINR, yearsLeft) {
-  if (yearsLeft <= 0) return null;
-  const atZero = projectCorpus(currentCorpus, totalMonthlySIP, 0, yearsLeft);
-  if (atZero >= targetINR) return 0;
-  let lo = 0, hi = 50;
-  const atMax = projectCorpus(currentCorpus, totalMonthlySIP, hi, yearsLeft);
-  if (atMax < targetINR) return null;
-  for (let i = 0; i < 100; i++) {
-    const mid = (lo + hi) / 2;
-    const projected = projectCorpus(currentCorpus, totalMonthlySIP, mid, yearsLeft);
-    if (Math.abs(projected - targetINR) / targetINR < 0.0001) {
-      return Math.round(mid * 100) / 100;
-    }
-    if (projected < targetINR) lo = mid; else hi = mid;
-    if (hi - lo < 0.0001) break;
-  }
-  return Math.round(((lo + hi) / 2) * 100) / 100;
-}
+describe('projectCorpus — combined lump sum + SIP', () => {
+  it('retirement projection (₹3L + ₹15K/mo @12% 22Y) is in a sane range', () => {
+    const proj = projectCorpus(300000, 15000, 12, 22)
+    expect(proj).toBeGreaterThan(20000000)
+    expect(proj).toBeLessThan(30000000)
+  })
+  it('emergency 1Y projection ≈ ₹90K', () => expectClose(projectCorpus(50000, 3000, 7, 1), 90400, 3))
+})
 
-function additionalSIPNeeded(currentCorpus, currentMonthlySIP, annualCAGR, yearsLeft, targetINR) {
-  const projected = projectCorpus(currentCorpus, currentMonthlySIP, annualCAGR, yearsLeft);
-  if (projected >= targetINR) return 0;
-  const gap = targetINR - projected;
-  const r = annualToMonthlyRate(annualCAGR);
-  const n = Math.round(yearsLeft * 12);
-  if (n <= 0) return gap;
-  if (r === 0) return gap / n;
-  const sipMultiplier = ((Math.pow(1 + r, n) - 1) / r) * (1 + r);
-  return Math.ceil(gap / sipMultiplier);
-}
+describe('requiredCAGR', () => {
+  it('already-met target → 0%', () => expect(requiredCAGR(10000000, 0, 10000000, 10)).toBe(0))
+  it('₹1Cr in 15Y from ₹1L + ₹10K/mo → reasonable (10–20%)', () => {
+    const r = requiredCAGR(100000, 10000, 10000000, 15)
+    expect(r).not.toBeNull()
+    expect(r).toBeGreaterThan(10)
+    expect(r).toBeLessThan(20)
+  })
+  it('infeasible target → null', () => expect(requiredCAGR(0, 1000, 100000000, 5)).toBeNull())
+  it('0 years left → null', () => expect(requiredCAGR(0, 10000, 10000000, 0)).toBeNull())
+})
 
-function lumpSumNeeded(currentCorpus, currentMonthlySIP, annualCAGR, yearsLeft, targetINR) {
-  const projected = projectCorpus(currentCorpus, currentMonthlySIP, annualCAGR, yearsLeft);
-  if (projected >= targetINR) return 0;
-  const gap = targetINR - projected;
-  if (yearsLeft <= 0) return gap;
-  return Math.ceil(gap / Math.pow(1 + annualCAGR / 100, yearsLeft));
-}
+describe('additionalSIPNeeded — closes the gap', () => {
+  it('on-track goal → ₹0', () => expect(additionalSIPNeeded(10000000, 0, 12, 10, 5000000)).toBe(0))
+  it('computed extra SIP actually reaches the target', () => {
+    const s = additionalSIPNeeded(0, 0, 12, 10, 5000000)
+    expectClose(futureValueSIP(s, 12, 10), 5000000, 2)
+  })
+})
 
-// ─── Test Runner ───────────────────────────────────────────────────
+describe('lumpSumNeeded — closes the gap', () => {
+  it('on-track goal → ₹0', () => expect(lumpSumNeeded(10000000, 0, 12, 10, 5000000)).toBe(0))
+  it('computed lump sum grows to the target', () => {
+    const ls = lumpSumNeeded(0, 0, 12, 10, 5000000)
+    expectClose(ls, 5000000 / Math.pow(1.12, 10), 1)
+  })
+})
 
-let passed = 0;
-let failed = 0;
+describe('healthStatus — Green ≥90, Amber 70–90, Red <70', () => {
+  it('95% → green', () => expect(healthStatus(95)).toBe('green'))
+  it('90% → green (boundary)', () => expect(healthStatus(90)).toBe('green'))
+  it('89% → amber', () => expect(healthStatus(89)).toBe('amber'))
+  it('70% → amber (boundary)', () => expect(healthStatus(70)).toBe('amber'))
+  it('69% → red', () => expect(healthStatus(69)).toBe('red'))
+  it('30% → red', () => expect(healthStatus(30)).toBe('red'))
+})
 
-function assert(condition, testName, detail) {
-  if (condition) {
-    passed++;
-    console.log(`  ✅ ${testName}`);
-  } else {
-    failed++;
-    console.log(`  ❌ ${testName}${detail ? ': ' + detail : ''}`);
-  }
-}
+describe('lever consistency — SIP and lump sum both close the gap', () => {
+  it('additional SIP and lump sum each reach ≥99% of target', () => {
+    const corpus = 200000, sip = 5000, cagr = 12, years = 15, target = 10000000
+    const projected = projectCorpus(corpus, sip, cagr, years)
+    expect(target).toBeGreaterThan(projected) // precondition: there is a gap
+    const extraSIP = additionalSIPNeeded(corpus, sip, cagr, years, target)
+    expect(projectCorpus(corpus, sip + extraSIP, cagr, years)).toBeGreaterThanOrEqual(target * 0.99)
+    const lump = lumpSumNeeded(corpus, sip, cagr, years, target)
+    expect(projectCorpus(corpus + lump, sip, cagr, years)).toBeGreaterThanOrEqual(target * 0.99)
+  })
+})
 
-function assertClose(actual, expected, tolerance, testName) {
-  const diff = Math.abs(actual - expected);
-  const pctDiff = expected !== 0 ? (diff / expected) * 100 : diff;
-  assert(
-    pctDiff <= tolerance,
-    testName,
-    `expected ~${expected}, got ${Math.round(actual)} (${pctDiff.toFixed(2)}% off)`
-  );
-}
+describe('computeConvictionScore — SW-3 5-factor model', () => {
+  const base = { dipPercent: 8, marketPE: 20, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 80, goalType: 'retirement' }
+  it('deeper dip scores higher', () => {
+    expect(computeConvictionScore({ ...base, dipPercent: 12 })).toBeGreaterThan(computeConvictionScore({ ...base, dipPercent: 3 }))
+  })
+  it('emergency fund → 0 (no equity ever)', () => {
+    expect(computeConvictionScore({ ...base, goalType: 'emergency' })).toBe(0)
+  })
+  it('imminent goal (<2Y) → 0 (capital preservation)', () => {
+    expect(computeConvictionScore({ ...base, yearsLeft: 1.5, goalType: 'car' })).toBe(0)
+  })
+  it('best case (deep + cheap + long + off-track) ≥ 80', () => {
+    expect(computeConvictionScore({ dipPercent: 15, marketPE: 16, drawdownPercent: 25, yearsLeft: 22, onTrackPct: 60, goalType: 'retirement' })).toBeGreaterThanOrEqual(80)
+  })
+  it('worst viable case scores low but non-zero', () => {
+    const s = computeConvictionScore({ dipPercent: 3, marketPE: 30, drawdownPercent: 2, yearsLeft: 3, onTrackPct: 95, goalType: 'car' })
+    expect(s).toBeGreaterThan(0)
+    expect(s).toBeLessThan(30)
+  })
+  it('cheap market scores higher than expensive', () => {
+    expect(computeConvictionScore({ ...base, marketPE: 16 })).toBeGreaterThan(computeConvictionScore({ ...base, marketPE: 30 }))
+  })
+  it('off-track goal scores higher than on-track', () => {
+    expect(computeConvictionScore({ ...base, onTrackPct: 60 })).toBeGreaterThan(computeConvictionScore({ ...base, onTrackPct: 95 }))
+  })
+})
 
-// ─── Tests ─────────────────────────────────────────────────────────
-
-console.log('\n📊 goalUtils.js — Financial Math Test Suite\n');
-
-// ── Monthly rate conversion ─────────────────────────────────────
-console.log('Monthly Rate Conversion:');
-{
-  const r12 = annualToMonthlyRate(12);
-  // (1.12)^(1/12) - 1 ≈ 0.009489 (0.9489%)
-  assertClose(r12 * 100, 0.9489, 1, '12% annual → ~0.949% monthly');
-
-  const r0 = annualToMonthlyRate(0);
-  assert(r0 === 0, '0% annual → 0% monthly');
-
-  const r7 = annualToMonthlyRate(7);
-  assertClose(r7 * 100, 0.5654, 2, '7% annual → ~0.565% monthly');
-}
-
-// ── Lump sum FV ─────────────────────────────────────────────────
-console.log('\nLump Sum Future Value:');
-{
-  // ₹1,00,000 at 12% for 20 years = ₹1,00,000 × 1.12^20 ≈ ₹9,64,629
-  const fv = futureValueLumpSum(100000, 12, 20);
-  assertClose(fv, 964629, 0.5, '₹1L at 12% for 20Y ≈ ₹9.65L');
-
-  // ₹5,00,000 at 10% for 10 years = ₹5,00,000 × 1.10^10 ≈ ₹12,96,871
-  const fv2 = futureValueLumpSum(500000, 10, 10);
-  assertClose(fv2, 1296871, 0.5, '₹5L at 10% for 10Y ≈ ₹12.97L');
-
-  // Edge: 0 corpus
-  assert(futureValueLumpSum(0, 12, 20) === 0, '₹0 corpus → ₹0');
-
-  // Edge: 0 years
-  assert(futureValueLumpSum(100000, 12, 0) === 100000, '0 years → returns PV');
-}
-
-// ── SIP FV ──────────────────────────────────────────────────────
-console.log('\nSIP Future Value:');
-// NOTE: We use proper compounding r = (1+annual)^(1/12)-1, NOT simplified r = annual/12.
-// Most Indian MF calculators use the simplified formula, which OVERSTATES returns by ~8%
-// over 20 years. Our conservative formula is better for a financial planning tool.
-{
-  // ₹10,000/month at 12% for 20 years (proper compounding, annuity-due)
-  const fv = futureValueSIP(10000, 12, 20);
-  assertClose(fv, 9198574, 1, '₹10K/mo SIP at 12% for 20Y ≈ ₹92.0L (proper compounding)');
-
-  // ₹5,000/month at 10% for 10 years (proper compounding, annuity-due) ≈ ₹10.07L
-  const fv2 = futureValueSIP(5000, 10, 10);
-  assertClose(fv2, 1007288, 2, '₹5K/mo SIP at 10% for 10Y ≈ ₹10.1L (proper compounding)');
-
-  // Edge: 0 SIP
-  assert(futureValueSIP(0, 12, 20) === 0, '₹0 SIP → ₹0');
-
-  // Edge: 0 years
-  assert(futureValueSIP(10000, 12, 0) === 0, '0 years → ₹0');
-
-  // Sanity: at 0% CAGR, SIP FV = SIP × months
-  const fv0 = futureValueSIP(10000, 0, 5);
-  assert(fv0 === 600000, '₹10K/mo at 0% for 5Y = ₹6L (pure savings)');
-}
-
-// ── Combined projection ─────────────────────────────────────────
-console.log('\nCombined Projection (Corpus + SIP):');
-{
-  // Retirement: ₹3L corpus + ₹15K/mo SIP at 12% for 22 years
-  const proj = projectCorpus(300000, 15000, 12, 22);
-  // ₹3L × 1.12^22 ≈ ₹39L + ₹15K SIP FV ≈ ₹2.1Cr → total ~₹2.5Cr
-  assert(proj > 20000000, `Retirement projection ₹${Math.round(proj/100000)}L is reasonable (>₹200L)`);
-  assert(proj < 30000000, `Retirement projection ₹${Math.round(proj/100000)}L is reasonable (<₹300L)`);
-
-  // Emergency: ₹50K corpus + ₹3K/mo at 7% for 1 year
-  const projE = projectCorpus(50000, 3000, 7, 1);
-  // ₹50K × 1.07 ≈ ₹53.5K + ₹3K × 12 × ~1.03 ≈ ₹37K → ~₹90K
-  assertClose(projE, 90400, 3, 'Emergency fund 1Y projection ≈ ₹90K');
-}
-
-// ── On-track percentage ─────────────────────────────────────────
-console.log('\nOn-Track Percentage:');
-{
-  // Exactly on track
-  assert(Math.round(projectCorpus(0, 10000, 12, 20) / 100 * 100 / (10000000 / 100)) > 0,
-    'Non-zero on-track for any SIP');
-
-  // Over-funded: projected 120L, target 100L → 120%
-  const pct = (12000000 / 10000000) * 100;
-  assert(pct === 120, '120L projected / 100L target = 120%');
-
-  // Cap at 200%
-  const capped = Math.min(200, (30000000 / 10000000) * 100);
-  assert(capped === 200, 'Cap at 200% for massively over-funded');
-}
-
-// ── Required CAGR ───────────────────────────────────────────────
-console.log('\nRequired CAGR:');
-{
-  // If projected at 0% already hits target, required = 0
-  const r0 = requiredCAGR(10000000, 0, 10000000, 10);
-  assert(r0 === 0, 'Already-met target → 0% required');
-
-  // ₹1L corpus, ₹10K/mo, target ₹1Cr, 15 years
-  // At 12%: project ≈ ₹63L. Need higher. At ~14%: ≈ ₹1Cr
-  const r1 = requiredCAGR(100000, 10000, 10000000, 15);
-  assert(r1 !== null && r1 > 10 && r1 < 20, `Required CAGR for ₹1Cr in 15Y = ${r1}% (reasonable)`);
-
-  // Infeasible: ₹0, ₹1000/mo, target ₹10Cr, 5 years
-  const r2 = requiredCAGR(0, 1000, 100000000, 5);
-  assert(r2 === null, 'Infeasible target → null');
-
-  // 0 years left
-  assert(requiredCAGR(0, 10000, 10000000, 0) === null, '0 years → null');
-}
-
-// ── Additional SIP needed ───────────────────────────────────────
-console.log('\nAdditional SIP Needed:');
-{
-  // Already on-track → 0
-  const s0 = additionalSIPNeeded(10000000, 0, 12, 10, 5000000);
-  assert(s0 === 0, 'On-track goal → ₹0 additional SIP');
-
-  // ₹0 corpus, ₹0 SIP, target ₹50L, 10Y, 12% CAGR
-  // Need SIP such that FV_SIP(SIP, 12%, 10) = ₹50L
-  const s1 = additionalSIPNeeded(0, 0, 12, 10, 5000000);
-  // Verify: FV_SIP(s1, 12%, 10) should ≈ ₹50L
-  const verify = futureValueSIP(s1, 12, 10);
-  assertClose(verify, 5000000, 2, `Additional SIP ₹${s1}/mo yields ≈₹50L in 10Y`);
-}
-
-// ── Lump sum needed ─────────────────────────────────────────────
-console.log('\nLump Sum Needed:');
-{
-  // On-track → 0
-  assert(lumpSumNeeded(10000000, 0, 12, 10, 5000000) === 0, 'On-track → ₹0 lump sum');
-
-  // ₹0 corpus, ₹0 SIP, target ₹50L, 10Y, 12% CAGR
-  // Lump = ₹50L / 1.12^10 ≈ ₹16.1L
-  const ls = lumpSumNeeded(0, 0, 12, 10, 5000000);
-  const expectedLumpSum = 5000000 / Math.pow(1.12, 10);
-  assertClose(ls, expectedLumpSum, 1, `Lump sum ₹${ls} → grows to ≈₹50L in 10Y`);
-}
-
-// ── Health Status ───────────────────────────────────────────────
-console.log('\nHealth Status:');
-{
-  const status = (pct) => pct >= 90 ? 'green' : pct >= 70 ? 'amber' : 'red';
-  assert(status(95) === 'green', '95% → green');
-  assert(status(90) === 'green', '90% → green (boundary)');
-  assert(status(89) === 'amber', '89% → amber');
-  assert(status(70) === 'amber', '70% → amber (boundary)');
-  assert(status(69) === 'red', '69% → red');
-  assert(status(30) === 'red', '30% → red');
-}
-
-// ── Real-world scenario tests ───────────────────────────────────
-console.log('\nReal-World Scenario Tests:');
-{
-  // Scenario 1: Retirement goal from Brief
-  // 22 years, ₹3Cr target, ₹8L invested, ₹25K/mo SIP, 12% CAGR
-  const retProj = projectCorpus(800000, 25000, 12, 22);
-  const retPct = (retProj / 30000000) * 100;
-  console.log(`  ℹ  Retirement: ₹${Math.round(retProj/100000)}L projected vs ₹300L target (${Math.round(retPct)}% on-track)`);
-  assert(retProj > 0, 'Retirement projection is positive');
-
-  // Scenario 2: Kids Education
-  // 12 years, ₹50L target, ₹2L invested, ₹8K/mo, 12% CAGR
-  const eduProj = projectCorpus(200000, 8000, 12, 12);
-  const eduPct = (eduProj / 5000000) * 100;
-  console.log(`  ℹ  Education: ₹${Math.round(eduProj/100000)}L projected vs ₹50L target (${Math.round(eduPct)}% on-track)`);
-
-  // Scenario 3: Emergency Fund (should be conservative)
-  // 1 year, ₹5L target, ₹3L invested, ₹10K/mo, 7% CAGR
-  const emProj = projectCorpus(300000, 10000, 7, 1);
-  console.log(`  ℹ  Emergency: ₹${Math.round(emProj/100000 * 10)/10}L projected vs ₹5L target`);
-
-  // Scenario 4: Car goal — short horizon
-  // 3 years, ₹15L target, ₹2L invested, ₹20K/mo, 10% CAGR
-  const carProj = projectCorpus(200000, 20000, 10, 3);
-  console.log(`  ℹ  Car: ₹${Math.round(carProj/100000 * 10)/10}L projected vs ₹15L target`);
-}
-
-// ── Cross-validation: SIP + lump sum should close the gap ───────
-console.log('\nCross-Validation (Lever Consistency):');
-{
-  const corpus = 200000;
-  const sip = 5000;
-  const cagr = 12;
-  const years = 15;
-  const target = 10000000;
-
-  const projected = projectCorpus(corpus, sip, cagr, years);
-  const gap = target - projected;
-
-  if (gap > 0) {
-    // Verify additional SIP closes the gap
-    const extraSIP = additionalSIPNeeded(corpus, sip, cagr, years, target);
-    const withExtraSIP = projectCorpus(corpus, sip + extraSIP, cagr, years);
-    assert(
-      withExtraSIP >= target * 0.99,
-      `Additional SIP ₹${extraSIP}/mo closes gap (projected ₹${Math.round(withExtraSIP/100000)}L vs ₹${Math.round(target/100000)}L target)`
-    );
-
-    // Verify lump sum closes the gap
-    const lump = lumpSumNeeded(corpus, sip, cagr, years, target);
-    const withLump = projectCorpus(corpus + lump, sip, cagr, years);
-    assert(
-      withLump >= target * 0.99,
-      `Lump sum ₹${Math.round(lump/100000 * 10)/10}L closes gap (projected ₹${Math.round(withLump/100000)}L)`
-    );
-  }
-}
-
-// ── Conviction Scoring (SW-3) ───────────────────────────────────
-// These tests validate the 5-factor weighted scoring model for dip prioritisation.
-// The scoring function lives in goalUtils.js — copied here for standalone testing.
-
-function computeConvictionScore({ dipPercent, marketPE, drawdownPercent, yearsLeft, onTrackPct, goalType }) {
-  // Emergency funds: no equity ever
-  if (goalType === 'emergency') return 0;
-  // Goals < 2Y: capital preservation zone
-  if (yearsLeft < 2) return 0;
-
-  const MAX_DIP_THRESHOLD = 15;
-  const dipScore = Math.min((Math.abs(dipPercent) / MAX_DIP_THRESHOLD) * 100, 100);
-
-  let peScore;
-  if (marketPE == null) peScore = 50;
-  else if (marketPE < 18) peScore = 100;
-  else if (marketPE <= 22) peScore = 60;
-  else peScore = 20;
-
-  const MAX_DRAWDOWN_THRESHOLD = 30;
-  const drawdownScore = Math.min((Math.abs(drawdownPercent || 0) / MAX_DRAWDOWN_THRESHOLD) * 100, 100);
-
-  let horizonScore;
-  if (yearsLeft > 15) horizonScore = 100;
-  else if (yearsLeft > 10) horizonScore = 80;
-  else if (yearsLeft > 5) horizonScore = 50;
-  else horizonScore = 20;
-
-  let healthScore;
-  if (onTrackPct < 70) healthScore = 100;
-  else if (onTrackPct < 90) healthScore = 70;
-  else healthScore = 30;
-
-  const score = dipScore * 0.30 + peScore * 0.20 + drawdownScore * 0.15 + horizonScore * 0.20 + healthScore * 0.15;
-  return Math.round(score * 10) / 10;
-}
-
-function allocateLumpSum(scoredEntries, totalLumpSum) {
-  const eligible = scoredEntries.filter(e => e.score > 0);
-  if (eligible.length === 0 || totalLumpSum <= 0) return [];
-  const totalScore = eligible.reduce((sum, e) => sum + e.score, 0);
-  let allocated = eligible.map(entry => ({
-    ...entry,
-    suggestedAmount: Math.round((entry.score / totalScore) * totalLumpSum / 500) * 500,
-  }));
-  const totalAllocated = allocated.reduce((sum, e) => sum + e.suggestedAmount, 0);
-  const diff = totalLumpSum - totalAllocated;
-  if (diff !== 0 && allocated.length > 0) {
-    allocated.sort((a, b) => b.score - a.score);
-    allocated[0].suggestedAmount += diff;
-  }
-  return allocated;
-}
-
-console.log('\nConviction Scoring (SW-3):');
-{
-  // Test 1: Deeper dips should produce higher scores (all else equal)
-  const shallow = computeConvictionScore({ dipPercent: 3, marketPE: 20, drawdownPercent: 10, yearsLeft: 20, onTrackPct: 85, goalType: 'retirement' });
-  const deep = computeConvictionScore({ dipPercent: 12, marketPE: 20, drawdownPercent: 10, yearsLeft: 20, onTrackPct: 85, goalType: 'retirement' });
-  assert(deep > shallow, `Deeper dip (12%) scores higher (${deep}) than shallow dip (3%) (${shallow})`);
-
-  // Test 2: Emergency fund goals ALWAYS get 0 — no equity ever (Brief §4.2)
-  const emergency = computeConvictionScore({ dipPercent: 10, marketPE: 15, drawdownPercent: 20, yearsLeft: 10, onTrackPct: 50, goalType: 'emergency' });
-  assert(emergency === 0, 'Emergency fund goal → 0 conviction (no equity ever)');
-
-  // Test 3: Imminent goals (< 2Y) always get 0 — capital preservation
-  const imminent = computeConvictionScore({ dipPercent: 10, marketPE: 15, drawdownPercent: 20, yearsLeft: 1.5, onTrackPct: 50, goalType: 'car' });
-  assert(imminent === 0, 'Imminent goal (<2Y) → 0 conviction (capital preservation)');
-
-  // Test 4: Long horizon + cheap market should produce highest scores
-  const bestCase = computeConvictionScore({ dipPercent: 15, marketPE: 16, drawdownPercent: 25, yearsLeft: 22, onTrackPct: 60, goalType: 'retirement' });
-  assert(bestCase >= 80, `Best case (deep dip + cheap + long + off-track) scores ≥80: got ${bestCase}`);
-
-  // Test 5: Short horizon + expensive market should produce low (but non-zero) scores
-  const worstNonZero = computeConvictionScore({ dipPercent: 3, marketPE: 30, drawdownPercent: 2, yearsLeft: 3, onTrackPct: 95, goalType: 'car' });
-  assert(worstNonZero > 0 && worstNonZero < 30, `Worst viable case scores low: got ${worstNonZero}`);
-
-  // Test 6: Cheap market scores higher than expensive market (all else equal)
-  const cheap = computeConvictionScore({ dipPercent: 8, marketPE: 16, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 80, goalType: 'retirement' });
-  const expensive = computeConvictionScore({ dipPercent: 8, marketPE: 30, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 80, goalType: 'retirement' });
-  assert(cheap > expensive, `Cheap market (${cheap}) scores higher than expensive (${expensive})`);
-
-  // Test 7: Off-track goal scores higher than on-track goal (all else equal)
-  const offTrack = computeConvictionScore({ dipPercent: 8, marketPE: 20, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 60, goalType: 'retirement' });
-  const onTrack = computeConvictionScore({ dipPercent: 8, marketPE: 20, drawdownPercent: 10, yearsLeft: 15, onTrackPct: 95, goalType: 'retirement' });
-  assert(offTrack > onTrack, `Off-track goal (${offTrack}) scores higher than on-track (${onTrack})`);
-}
-
-console.log('\nLump Sum Allocation (SW-3):');
-{
-  // Test 8: Suggested amounts should sum to the entered lump sum
+describe('allocateLumpSum — SW-3', () => {
   const entries = [
     { fundId: 'a', goalId: 'g1', score: 80 },
     { fundId: 'b', goalId: 'g2', score: 40 },
     { fundId: 'c', goalId: 'g3', score: 20 },
-  ];
-  const allocated = allocateLumpSum(entries, 100000);
-  const totalAllocated = allocated.reduce((sum, e) => sum + e.suggestedAmount, 0);
-  assert(totalAllocated === 100000, `Allocations sum to lump sum: ${totalAllocated} === 100000`);
+  ]
+  it('allocations sum exactly to the lump sum', () => {
+    const allocated = allocateLumpSum(entries, 100000)
+    expect(allocated.reduce((s, e) => s + e.suggestedAmount, 0)).toBe(100000)
+  })
+  it('higher score gets a larger allocation', () => {
+    const allocated = allocateLumpSum(entries, 100000)
+    const hi = allocated.find(e => e.fundId === 'a')
+    const lo = allocated.find(e => e.fundId === 'c')
+    expect(hi.suggestedAmount).toBeGreaterThan(lo.suggestedAmount)
+  })
+  it('single dip fund gets 100% of lump sum', () => {
+    const single = allocateLumpSum([{ fundId: 'x', goalId: 'g1', score: 75 }], 50000)
+    expect(single).toHaveLength(1)
+    expect(single[0].suggestedAmount).toBe(50000)
+  })
+  it('zero-score entries are excluded', () => {
+    const withZero = allocateLumpSum([
+      { fundId: 'a', goalId: 'g1', score: 60 },
+      { fundId: 'b', goalId: 'g2', score: 0 },
+    ], 50000)
+    expect(withZero).toHaveLength(1)
+    expect(withZero[0].suggestedAmount).toBe(50000)
+  })
+  it('empty entries or zero lump sum → empty allocation', () => {
+    expect(allocateLumpSum([], 100000)).toHaveLength(0)
+    expect(allocateLumpSum(entries, 0)).toHaveLength(0)
+  })
+})
 
-  // Test 9: Higher score gets larger allocation
-  const highest = allocated.find(e => e.fundId === 'a');
-  const lowest = allocated.find(e => e.fundId === 'c');
-  assert(highest.suggestedAmount > lowest.suggestedAmount, `Highest score (${highest.suggestedAmount}) gets more than lowest (${lowest.suggestedAmount})`);
+describe('getHorizonBucket — ceiling logic', () => {
+  const cases = [[1,1],[0.5,1],[2,3],[3,3],[4,5],[5,5],[6,7],[7,7],[8,10],[9,10],[10,10],[11,15],[14,15],[15,15],[16,20],[20,20],[25,20],[40,20]]
+  it.each(cases)('getHorizonBucket(%s) → %s', (input, expected) => {
+    expect(getHorizonBucket(input)).toBe(expected)
+  })
+})
 
-  // Test 10: Single fund with dip signal gets 100% of lump sum
-  const single = allocateLumpSum([{ fundId: 'x', goalId: 'g1', score: 75 }], 50000);
-  assert(single.length === 1 && single[0].suggestedAmount === 50000, `Single dip fund gets 100% of lump sum: ${single[0]?.suggestedAmount}`);
-
-  // Test 11: Zero-score entries are excluded from allocation
-  const withZero = allocateLumpSum([
-    { fundId: 'a', goalId: 'g1', score: 60 },
-    { fundId: 'b', goalId: 'g2', score: 0 }, // emergency or imminent
-  ], 50000);
-  assert(withZero.length === 1, `Zero-score entries excluded: ${withZero.length} eligible`);
-  assert(withZero[0].suggestedAmount === 50000, 'Non-zero entry gets full amount when others are zero');
-
-  // Test 12: Empty entries or zero lump sum returns empty
-  assert(allocateLumpSum([], 100000).length === 0, 'No entries → empty allocation');
-  assert(allocateLumpSum(entries, 0).length === 0, 'Zero lump sum → empty allocation');
-}
-
-// ── Horizon Bucket & CAGR Suggestion (SW-1 enhancement) ──────────
-// Inline copies of the new goalUtils functions for standalone testing
-const CAGR_HORIZON_BUCKETS = [1, 3, 5, 7, 10, 15, 20];
-const CONSERVATIVE_CAGR_DISCOUNT = 0.5;
-const INDEX_HISTORICAL_CAGR = {
-  largecap:  { 1: 11,  3: 11,  5: 11.5, 7: 12,  10: 12,  15: 12.5, 20: 13  },
-  midcap:    { 1: 12,  3: 13,  5: 14,   7: 14.5, 10: 15,  15: 15,   20: 15  },
-  smallcap:  { 1: 11,  3: 13,  5: 13.5, 7: 14,  10: 14,  15: 14.5, 20: 15  },
-  arbitrage: { 1: 7,   3: 7,   5: 7,    7: 7,   10: 7,   15: 7,    20: 7   },
-};
-
-function getHorizonBucket(years) {
-  for (const bucket of CAGR_HORIZON_BUCKETS) {
-    if (years <= bucket) return bucket;
-  }
-  return 20;
-}
-
-function computeSuggestedCAGR(selectedFunds, yearsLeft, trackedFunds) {
-  if (!selectedFunds || !trackedFunds || yearsLeft <= 0) return null;
-  const bucket = getHorizonBucket(yearsLeft);
-  const eligible = [];
-  for (const [fundId, fundCfg] of Object.entries(selectedFunds)) {
-    const meta = trackedFunds.find(f => f.id === fundId);
-    if (!meta) continue;
-    const indexKey = meta.index
-      || (meta.category?.toLowerCase().includes('arbitrage') ? 'arbitrage' : null);
-    if (!indexKey || !INDEX_HISTORICAL_CAGR[indexKey]) continue;
-    const rawCagr = INDEX_HISTORICAL_CAGR[indexKey][bucket];
-    if (rawCagr == null) continue;
-    eligible.push({ sip: Math.max(0, fundCfg.monthlySIP || 0), adjustedCagr: rawCagr - CONSERVATIVE_CAGR_DISCOUNT });
-  }
-  if (eligible.length === 0) return null;
-  const totalSIP = eligible.reduce((sum, e) => sum + e.sip, 0);
-  const equalWeight = totalSIP === 0;
-  let weightedSum = 0;
-  for (const e of eligible) {
-    const w = equalWeight ? 1 / eligible.length : e.sip / totalSIP;
-    weightedSum += e.adjustedCagr * w;
-  }
-  return Math.round(weightedSum * 10) / 10;
-}
-
-console.log('\nHorizon Bucket (ceiling logic):');
-{
-  // Ceiling rule: always round UP to the next standard bucket
-  assert(getHorizonBucket(1)    === 1,  'Exactly 1Y → bucket 1');
-  assert(getHorizonBucket(0.5)  === 1,  'Under 1Y → bucket 1 (imminent)');
-  assert(getHorizonBucket(2)    === 3,  '2Y → bucket 3 (next above 2)');
-  assert(getHorizonBucket(3)    === 3,  'Exactly 3Y → bucket 3');
-  assert(getHorizonBucket(4)    === 5,  '4Y → bucket 5 (not 3)');
-  assert(getHorizonBucket(5)    === 5,  'Exactly 5Y → bucket 5');
-  assert(getHorizonBucket(6)    === 7,  '6Y → bucket 7');
-  assert(getHorizonBucket(7)    === 7,  'Exactly 7Y → bucket 7');
-  assert(getHorizonBucket(8)    === 10, '8Y → bucket 10 (conservative ceiling)');
-  assert(getHorizonBucket(9)    === 10, '9Y → bucket 10');
-  assert(getHorizonBucket(10)   === 10, 'Exactly 10Y → bucket 10');
-  assert(getHorizonBucket(11)   === 15, '11Y → bucket 15');
-  assert(getHorizonBucket(14)   === 15, '14Y → bucket 15');
-  assert(getHorizonBucket(15)   === 15, 'Exactly 15Y → bucket 15');
-  assert(getHorizonBucket(16)   === 20, '16Y → bucket 20');
-  assert(getHorizonBucket(20)   === 20, 'Exactly 20Y → bucket 20');
-  assert(getHorizonBucket(25)   === 20, 'Beyond 20Y → capped at 20');
-  assert(getHorizonBucket(40)   === 20, '40Y → capped at 20');
-}
-
-console.log('\nCAGR Suggestion (index-weighted):');
-{
+describe('computeSuggestedCAGR — index-weighted, conservative discount', () => {
   const funds = [
     { id: 'sc1', name: 'Small Cap A', category: 'Small Cap',  index: 'smallcap' },
     { id: 'mc1', name: 'Mid Cap A',   category: 'Mid Cap',    index: 'midcap'   },
     { id: 'lc1', name: 'Large Cap A', category: 'Large Cap',  index: 'largecap' },
     { id: 'arb', name: 'Arbitrage A', category: 'Arbitrage',  index: null       },
-  ];
-
-  // Test 1: Single smallcap fund, 10Y horizon
-  // getHorizonBucket(10) = 10 → smallcap raw = 14, adjusted = 13.5
-  const single = computeSuggestedCAGR({ sc1: { monthlySIP: 5000 } }, 10, funds);
-  assert(single === 13.5, `Single smallcap 10Y: expected 13.5, got ${single}`);
-
-  // Test 2: Single midcap fund, 15Y horizon
-  // getHorizonBucket(15) = 15 → midcap raw = 15, adjusted = 14.5
-  const midcap15 = computeSuggestedCAGR({ mc1: { monthlySIP: 3000 } }, 15, funds);
-  assert(midcap15 === 14.5, `Single midcap 15Y: expected 14.5, got ${midcap15}`);
-
-  // Test 3: Single largecap fund, 8Y horizon
-  // getHorizonBucket(8) = 10 (ceiling!) → largecap raw = 12, adjusted = 11.5
-  const largecap8 = computeSuggestedCAGR({ lc1: { monthlySIP: 2000 } }, 8, funds);
-  assert(largecap8 === 11.5, `Largecap 8Y (uses 10Y bucket via ceiling): expected 11.5, got ${largecap8}`);
-
-  // Test 4: Mixed funds — equal SIP → equal weight
-  // smallcap(10Y) = 13.5, midcap(10Y) = 14.5 → average = 14.0
-  const equalMix = computeSuggestedCAGR(
-    { sc1: { monthlySIP: 5000 }, mc1: { monthlySIP: 5000 } }, 10, funds
-  );
-  assert(equalMix === 14.0, `Equal SIP small+mid 10Y: expected 14.0, got ${equalMix}`);
-
-  // Test 5: Weighted mix — 3:1 smallcap:largecap at 10Y
-  // smallcap(10Y) adj = 13.5 × 0.75 + largecap(10Y) adj = 11.5 × 0.25 = 10.125 + 2.875 = 13.0
-  const weighted = computeSuggestedCAGR(
-    { sc1: { monthlySIP: 6000 }, lc1: { monthlySIP: 2000 } }, 10, funds
-  );
-  assert(weighted === 13.0, `3:1 small:large 10Y: expected 13.0, got ${weighted}`);
-
-  // Test 6: Arbitrage fund (null index) → resolved via category, uses 'arbitrage' table
-  // arbitrage(10Y) raw = 7, adjusted = 6.5
-  const arb = computeSuggestedCAGR({ arb: { monthlySIP: 3000 } }, 10, funds);
-  assert(arb === 6.5, `Arbitrage fund 10Y: expected 6.5, got ${arb}`);
-
-  // Test 7: All SIPs are zero → equal weighting fallback (not null)
-  // smallcap(10Y) = 13.5, midcap(10Y) = 14.5 → equal = 14.0
-  const zeroSIP = computeSuggestedCAGR(
-    { sc1: { monthlySIP: 0 }, mc1: { monthlySIP: 0 } }, 10, funds
-  );
-  assert(zeroSIP === 14.0, `All zero SIPs → equal weight fallback: expected 14.0, got ${zeroSIP}`);
-
-  // Test 8: No funds linked → null
-  const none = computeSuggestedCAGR({}, 10, funds);
-  assert(none === null, `No funds → null (caller uses goal-type default)`);
-
-  // Test 9: Fund not in trackedFunds → skipped, doesn't crash
-  const unknown = computeSuggestedCAGR({ ghost: { monthlySIP: 5000 } }, 10, funds);
-  assert(unknown === null, `Unknown fundId → null (fund not in trackedFunds)`);
-
-  // Test 10: Very short horizon (0.5Y) uses bucket 1 — no crash
-  const short = computeSuggestedCAGR({ sc1: { monthlySIP: 1000 } }, 0.5, funds);
-  // smallcap bucket 1 = 11 - 0.5 = 10.5
-  assert(short === 10.5, `0.5Y horizon uses bucket 1: expected 10.5, got ${short}`);
-
-  // Test 11: Horizon of exactly 0 → null (guard against division by zero)
-  const zero = computeSuggestedCAGR({ sc1: { monthlySIP: 1000 } }, 0, funds);
-  assert(zero === null, `yearsLeft=0 → null`);
-
-  // Test 12: 6Y horizon → ceiling bucket 7
-  // midcap(7Y) raw = 14.5, adjusted = 14.0
-  const sixYear = computeSuggestedCAGR({ mc1: { monthlySIP: 5000 } }, 6, funds);
-  assert(sixYear === 14.0, `6Y → bucket 7 (ceiling): expected 14.0, got ${sixYear}`);
-}
-
-// ── Summary ─────────────────────────────────────────────────────
-console.log(`\n${'─'.repeat(50)}`);
-console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);
-console.log(`${'─'.repeat(50)}\n`);
-
-if (failed > 0) {
-  process.exit(1);
-}
+  ]
+  it('single smallcap 10Y → 13.5', () => expect(computeSuggestedCAGR({ sc1: { monthlySIP: 5000 } }, 10, funds)).toBe(13.5))
+  it('single midcap 15Y → 14.5', () => expect(computeSuggestedCAGR({ mc1: { monthlySIP: 3000 } }, 15, funds)).toBe(14.5))
+  it('largecap 8Y uses 10Y bucket (ceiling) → 11.5', () => expect(computeSuggestedCAGR({ lc1: { monthlySIP: 2000 } }, 8, funds)).toBe(11.5))
+  it('equal SIP small+mid 10Y → 14.0', () => expect(computeSuggestedCAGR({ sc1: { monthlySIP: 5000 }, mc1: { monthlySIP: 5000 } }, 10, funds)).toBe(14.0))
+  it('3:1 small:large 10Y → 13.0', () => expect(computeSuggestedCAGR({ sc1: { monthlySIP: 6000 }, lc1: { monthlySIP: 2000 } }, 10, funds)).toBe(13.0))
+  it('arbitrage fund (null index via category) 10Y → 6.5', () => expect(computeSuggestedCAGR({ arb: { monthlySIP: 3000 } }, 10, funds)).toBe(6.5))
+  it('all zero SIPs → equal weight fallback 14.0', () => expect(computeSuggestedCAGR({ sc1: { monthlySIP: 0 }, mc1: { monthlySIP: 0 } }, 10, funds)).toBe(14.0))
+  it('no funds → null', () => expect(computeSuggestedCAGR({}, 10, funds)).toBeNull())
+  it('unknown fundId → null', () => expect(computeSuggestedCAGR({ ghost: { monthlySIP: 5000 } }, 10, funds)).toBeNull())
+  it('0.5Y horizon uses bucket 1 → 10.5', () => expect(computeSuggestedCAGR({ sc1: { monthlySIP: 1000 } }, 0.5, funds)).toBe(10.5))
+  it('yearsLeft=0 → null', () => expect(computeSuggestedCAGR({ sc1: { monthlySIP: 1000 } }, 0, funds)).toBeNull())
+  it('6Y → bucket 7 (ceiling) → 14.0', () => expect(computeSuggestedCAGR({ mc1: { monthlySIP: 5000 } }, 6, funds)).toBe(14.0))
+})

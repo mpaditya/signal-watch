@@ -1,5 +1,29 @@
 # Project Artha — Claude Code Context
 
+## ⛔ TESTING RULES — NON-NEGOTIABLE (read before writing any test)
+These rules are MANDATORY for every build, feature, fix, or refactor. They exist because
+a past "one-shot" build shipped test files that never ran and tested fake code.
+
+1. **TEST THE REAL CODE, NEVER A COPY.** Every test MUST `import` the function/component
+   from its real module (e.g. `import { projectCorpus } from './goalUtils.js'`). NEVER
+   copy/paste/re-declare the code under test inside the test file ("inline copies",
+   "simulate the functions", "copied for standalone testing" are all FORBIDDEN). A test
+   that defines its own copy of the logic proves nothing.
+2. **TESTS MUST ACTUALLY RUN under the project runner.** The runner is **Vitest**
+   (`npm test`). Every test file uses `describe/it/expect` from `vitest`. Do NOT invent a
+   homemade `console.log`-based assertion harness. If you add a test file, run `npm test`
+   and paste the pass/fail output. "Tests written" ≠ "tests pass" — only the runner output counts.
+3. **PROVE NEW TESTS HAVE TEETH.** For any non-trivial new test, briefly mutate the real
+   code to confirm the test FAILS, then revert. A test that can't fail is theater.
+4. **INTEGRATION OVER UNIT FOR UI WIRING.** Logic bugs hide in unit tests passing while the
+   feature is broken (button never renders, wrong prop, wrong localStorage key). For any
+   component feature, add a React Testing Library test that mounts the REAL component,
+   clicks the REAL buttons, and asserts what the user sees.
+5. **NEVER REPORT COVERAGE YOU DID NOT RUN.** Do not claim "N tests pass" unless `npm test`
+   just printed that. Do not cite test counts from docs as evidence they pass.
+
+Run `npm test` before every commit that touches `src/`. Green must mean green.
+
 ## What This Is
 Personal AI finance co-pilot for Indian mutual fund investing. Built with React 18 + Vite.
 Live at: comforting-dusk-525b9e.netlify.app (migrating to GitHub Pages — see Sprint 1)
@@ -66,8 +90,12 @@ Live at: comforting-dusk-525b9e.netlify.app (migrating to GitHub Pages — see S
 - src/components/ChatPanel.jsx — floating AI chat panel (SW-4); buildContext() anonymises portfolio
 - src/components/LLMSettings.jsx — modal for entering/clearing Gemini API key
 - src/llm.js — LLM abstraction layer (AR-5): callLLM(), hasLLMKey(), setLLMKey()
-- src/llm.test.js — 42 unit tests for the LLM abstraction
-- src/goalUtils.test.js — 35 financial math unit tests
+- src/llm.test.js — Vitest suite for the LLM abstraction (imports real ./llm.js)
+- src/goalUtils.test.js — Vitest suite for financial math (imports real ./goalUtils.js)
+- src/decisions.test.js — Vitest suite for the decisions audit log
+- src/supabase.test.js — Vitest suite for the Supabase client + localStorage fallback
+- src/components/GoalDashboard.test.jsx — RTL integration test (mounts real component, clicks buttons)
+- vite.config.js — also holds Vitest config (jsdom env, include/exclude). Runner: `npm test`
 - scripts/alert.py — daily email alert script
 - .github/workflows/daily-alert.yml — GitHub Actions cron schedule
 
