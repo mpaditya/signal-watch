@@ -487,12 +487,22 @@ export default function App(){
     const type=params.get('type')
 
     if(accessToken){
-      // Direct session from magic link URL (implicit flow)
-      // Build a minimal session object from URL params
+      // Direct session from magic link URL (implicit flow).
+      // The real user id is NOT a URL param — it's the `sub` claim inside the
+      // access_token JWT. Decode it so RLS inserts (decisions, goals) carry the
+      // correct user_id and aren't silently rejected. JWT = header.payload.signature,
+      // each base64url-encoded; we only need the payload's sub + email.
+      const decodeJwt=(t)=>{
+        try{
+          const payload=t.split('.')[1]
+          return JSON.parse(atob(payload.replace(/-/g,'+').replace(/_/g,'/')))
+        }catch{return {}}
+      }
+      const claims=decodeJwt(accessToken)
       const session={
         access_token:accessToken,
         refresh_token:params.get('refresh_token'),
-        user:{id:params.get('user_id')||'',email:''}
+        user:{id:claims.sub||'',email:claims.email||''}
       }
       setSession(session)
       setAuthReady(true)
