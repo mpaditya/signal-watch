@@ -511,6 +511,90 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
  *                               (from goal.funds)
  * @returns {object} Full health snapshot
  */
+// ─── SW-16: Composite (multi-instrument) goal projection ───────────
+// A goal can be funded by a MIX of instruments, each with its OWN return:
+//   - MF SIP   — goal.funds[fid] = { monthlySIP, sipDate, rate? }  (rate defaults to goal CAGR)
+//   - RD       — goal.instruments[] = { type:'RD', monthly, rate, startDate, maturityDate, maturityAmount? }
+//   - FD       — goal.instruments[] = { type:'FD', principal, rate, startDate, maturityDate, maturityAmount? }
+// Legacy goals (funds without `rate`, no instruments) project IDENTICALLY to the old
+// single-CAGR model, because Σ FV(sip_i @ same rate) == FV(Σ sip_i @ rate).
+//
+// Per-instrument projection is financially correct for composite goals: a 1-year car goal
+// backed by an RD/FD is projected at its fixed rate, not an equity CAGR — so derisking
+// warnings and "am I in the right instruments?" context are accurate.
+
+// Fractional years between two ISO dates (can be negative if `to` is before `from`).
+function yearsBetween(fromStr, toStr) {
+  if (!fromStr || !toStr) return 0;
+  const from = new Date(fromStr), to = new Date(toStr);
+  if (isNaN(from) || isNaN(to)) return 0;
+  return (to - from) / (365.25 * 24 * 60 * 60 * 1000);
+}
+
+// Maturity amount of an RD/FD: explicit override if the user entered the contracted figure,
+// otherwise computed from contribution + rate over its full term (start → maturity).
+export function instrumentMaturityAmount(inst) {
+  if (inst.maturityAmount != null && inst.maturityAmount !== '') return Number(inst.maturityAmount);
+  const term = yearsBetween(inst.startDate, inst.maturityDate);
+  if (term <= 0) return inst.type === 'FD' ? Number(inst.principal || 0) : 0;
+  if (inst.type === 'FD') return futureValueLumpSum(Number(inst.principal || 0), Number(inst.rate || 0), term);
+  if (inst.type === 'RD') return futureValueSIP(Number(inst.monthly || 0), Number(inst.rate || 0), term);
+  return 0;
+}
+
+// Value an RD/FD instrument contributes to the goal AT the goal's target date.
+// - Matures on/before target  → its maturity amount, held flat to target (conservative:
+//   we don't assume reinvestment of a matured deposit).
+// - Matures after target       → its accrued value at the target date (project to yearsLeft).
+export function instrumentValueAtTarget(inst, yearsLeft, targetDateStr) {
+  const now = new Date().toISOString().slice(0, 10);
+  const maturesAfterTarget = yearsBetween(now, inst.maturityDate) > yearsLeft;
+  if (!maturesAfterTarget) return instrumentMaturityAmount(inst);
+  // Still running at the target date — accrue only up to the target horizon.
+  if (inst.type === 'FD') return futureValueLumpSum(Number(inst.principal || 0), Number(inst.rate || 0), yearsLeft);
+  if (inst.type === 'RD') return futureValueSIP(Number(inst.monthly || 0), Number(inst.rate || 0), yearsLeft);
+  return 0;
+}
+
+// Project the full goal corpus at the target date by summing every funding source at its
+// own return. mfRate defaults to the goal's assumed CAGR; each MF fund may override `rate`.
+export function projectGoalComposite(goal, yearsLeft) {
+  const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
+  const currentCorpus = goal.currentCorpus || 0;
+
+  // Existing MF corpus grows at the (blended) equity rate.
+  let total = futureValueLumpSum(currentCorpus, mfRate, yearsLeft);
+
+  // Each MF SIP grows at its own rate (or the goal rate if unset).
+  if (goal.funds) {
+    for (const f of Object.values(goal.funds)) {
+      total += futureValueSIP(Number(f.monthlySIP || 0), Number(f.rate ?? mfRate), yearsLeft);
+    }
+  }
+
+  // RD/FD instruments contribute their value at the target date.
+  if (Array.isArray(goal.instruments)) {
+    for (const inst of goal.instruments) {
+      total += instrumentValueAtTarget(inst, yearsLeft, goal.targetDate);
+    }
+  }
+  return total;
+}
+
+// Contribution-weighted blended return, for DISPLAY only (the goal's effective rate).
+export function blendedReturn(goal) {
+  const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
+  let weighted = 0, weight = 0;
+  const add = (amount, rate) => { weighted += amount * rate; weight += amount; };
+  add(goal.currentCorpus || 0, mfRate);
+  if (goal.funds) for (const f of Object.values(goal.funds)) add(Number(f.monthlySIP || 0), Number(f.rate ?? mfRate));
+  if (Array.isArray(goal.instruments)) for (const inst of goal.instruments) {
+    const amt = inst.type === 'FD' ? Number(inst.principal || 0) : Number(inst.monthly || 0);
+    add(amt, Number(inst.rate || 0));
+  }
+  return weight > 0 ? Math.round((weighted / weight) * 10) / 10 : mfRate;
+}
+
 export function computeGoalHealth(goal) {
   const yearsLeft = computeYearsLeft(goal.targetDate);
   const totalMonthlySIP = getTotalMonthlySIP(goal);
@@ -518,7 +602,9 @@ export function computeGoalHealth(goal) {
   const currentCorpus = goal.currentCorpus || 0;
   const assumedCAGR = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
 
-  const projected = projectCorpus(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft);
+  // SW-16: composite projection (per-instrument returns). For legacy all-MF goals with no
+  // per-fund rate and no instruments, this equals the old projectCorpus(...) exactly.
+  const projected = projectGoalComposite(goal, yearsLeft);
   const onTrackPct = onTrackPercent(projected, targetINR);
   const status = healthStatus(onTrackPct);
 

@@ -22,7 +22,14 @@ import {
   allocateLumpSum,
   getHorizonBucket,
   computeSuggestedCAGR,
+  projectGoalComposite,
+  instrumentMaturityAmount,
+  instrumentValueAtTarget,
+  blendedReturn,
 } from './goalUtils.js'
+
+// ISO date `years` from now (negative = past). For instrument maturity/target tests.
+const isoIn = (years) => new Date(Date.now() + years * 365.25 * 86400000).toISOString().slice(0, 10)
 
 // Assert `actual` is within `tolPct` percent of `expected`.
 function expectClose(actual, expected, tolPct) {
@@ -198,4 +205,60 @@ describe('computeSuggestedCAGR — index-weighted, conservative discount', () =>
   it('0.5Y horizon uses bucket 1 → 10.5', () => expect(computeSuggestedCAGR({ sc1: { monthlySIP: 1000 } }, 0.5, funds)).toBe(10.5))
   it('yearsLeft=0 → null', () => expect(computeSuggestedCAGR({ sc1: { monthlySIP: 1000 } }, 0, funds)).toBeNull())
   it('6Y → bucket 7 (ceiling) → 14.0', () => expect(computeSuggestedCAGR({ mc1: { monthlySIP: 5000 } }, 6, funds)).toBe(14.0))
+})
+
+describe('SW-16 composite projection — per-instrument returns (MF + RD + FD)', () => {
+  it('projectGoalComposite equals legacy projectCorpus for an all-MF goal (backward-compat)', () => {
+    const goal = { assumedCAGR: 12, currentCorpus: 300000, funds: { a: { monthlySIP: 10000 }, b: { monthlySIP: 5000 } } }
+    const legacy = projectCorpus(300000, 15000, 12, 20)
+    expectClose(projectGoalComposite(goal, 20), legacy, 0.001)
+  })
+
+  it('each MF SIP can carry its own rate', () => {
+    const goal = { assumedCAGR: 12, currentCorpus: 0, funds: { a: { monthlySIP: 5000, rate: 14 }, b: { monthlySIP: 5000, rate: 10 } } }
+    const expected = futureValueSIP(5000, 14, 10) + futureValueSIP(5000, 10, 10)
+    expectClose(projectGoalComposite(goal, 10), expected, 0.001)
+  })
+
+  it('FD maturity computed from principal + rate + term', () => {
+    // ₹3L at 7% for 2 years = 300000 × 1.07² ≈ ₹3,43,470
+    expectClose(instrumentMaturityAmount({ type: 'FD', principal: 300000, rate: 7, startDate: '2025-03-01', maturityDate: '2027-03-01' }), 343470, 0.5)
+  })
+
+  it('explicit maturityAmount override wins over computation', () => {
+    expect(instrumentMaturityAmount({ type: 'FD', principal: 300000, rate: 7, startDate: '2025-03-01', maturityDate: '2027-03-01', maturityAmount: 330000 })).toBe(330000)
+  })
+
+  it('RD maturity exceeds total contributions', () => {
+    const m = instrumentMaturityAmount({ type: 'RD', monthly: 30000, rate: 7, startDate: isoIn(0), maturityDate: isoIn(2.5) })
+    expect(m).toBeGreaterThan(30000 * 30) // > ~30 monthly contributions
+  })
+
+  it('instrument maturing BEFORE target contributes its maturity amount (held flat)', () => {
+    const inst = { type: 'FD', principal: 100000, rate: 7, startDate: isoIn(-1), maturityDate: isoIn(1), maturityAmount: 200000 }
+    expect(instrumentValueAtTarget(inst, 5, isoIn(5))).toBe(200000)
+  })
+
+  it('instrument maturing AFTER target contributes its accrued value at the target', () => {
+    const inst = { type: 'FD', principal: 100000, rate: 7, startDate: isoIn(-1), maturityDate: isoIn(10) }
+    // matures after the 5Y target → accrue only to 5Y: 100000 × 1.07⁵
+    expectClose(instrumentValueAtTarget(inst, 5, isoIn(5)), futureValueLumpSum(100000, 7, 5), 0.5)
+  })
+
+  it('projectGoalComposite sums MF SIP + FD instrument', () => {
+    const goal = {
+      assumedCAGR: 12, currentCorpus: 0,
+      funds: { a: { monthlySIP: 5000, rate: 12 } },
+      instruments: [{ type: 'FD', principal: 100000, rate: 7, startDate: isoIn(-1), maturityDate: isoIn(10) }],
+      targetDate: isoIn(5),
+    }
+    const expected = futureValueSIP(5000, 12, 5) + futureValueLumpSum(100000, 7, 5)
+    expectClose(projectGoalComposite(goal, 5), expected, 0.5)
+  })
+
+  it('blendedReturn is contribution-weighted across instruments', () => {
+    // MF SIP ₹10k @13% + RD ₹10k @7% → blended 10%
+    const goal = { assumedCAGR: 13, currentCorpus: 0, funds: { a: { monthlySIP: 10000, rate: 13 } }, instruments: [{ type: 'RD', monthly: 10000, rate: 7 }] }
+    expect(blendedReturn(goal)).toBe(10)
+  })
 })
