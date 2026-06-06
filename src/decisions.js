@@ -111,7 +111,11 @@ export async function flushDecisionQueue() {
   const remaining = []
 
   for (const row of queue) {
-    const { error } = await insertDecision(row)
+    // Strip queue-only bookkeeping fields before inserting. `queued_at` is added by
+    // enqueue() and is NOT a column in the decisions table — leaving it in caused the
+    // insert to 400 and the row to stay stuck in the queue forever.
+    const { queued_at, ...clean } = row
+    const { error } = await insertDecision(clean)
     if (error) { errors++; remaining.push(row) }
     else flushed++
   }

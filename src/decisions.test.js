@@ -180,6 +180,24 @@ describe('decisions.js — queue flush', () => {
     expect(getPendingQueue().length).toBe(0)
   })
 
+  it('flushDecisionQueue strips queued_at before inserting (not a DB column)', async () => {
+    // Queue a decision offline — enqueue() stamps it with queued_at.
+    isSupabaseConfigured.mockReturnValue(false)
+    isAuthenticated.mockReturnValue(false)
+    await logDecision(ACTION_TYPES.GOAL_ACHIEVE, { notes: 'done' })
+    expect(getPendingQueue()[0].queued_at).toBeTruthy() // present in the queue
+
+    // Flush — the row handed to insertDecision must NOT carry queued_at, or Postgres
+    // rejects it (no such column) and the row stays stuck forever.
+    isSupabaseConfigured.mockReturnValue(true)
+    isAuthenticated.mockReturnValue(true)
+    insertDecision.mockResolvedValue({ data: { id: 'x' }, error: null })
+    await flushDecisionQueue()
+    const inserted = insertDecision.mock.calls[0][0]
+    expect(inserted.queued_at).toBeUndefined()
+    expect(inserted.action_type).toBe('GOAL_ACHIEVE')
+  })
+
   it('flushDecisionQueue keeps failed items in queue', async () => {
     isSupabaseConfigured.mockReturnValue(false)
     isAuthenticated.mockReturnValue(false)
