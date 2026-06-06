@@ -382,8 +382,12 @@ export async function migrateLocalStorageToSupabase() {
     const cfg = localStorage.getItem('artha_config_v1')
     if (cfg) {
       const goalsConfig = JSON.parse(cfg)
+      // Merge in corpus amounts (artha_goal_corpus) so the goals-table corpus column is
+      // seeded with the user's real invested values, not 0.
+      let corpusMap = {}
+      try { corpusMap = JSON.parse(localStorage.getItem('artha_goal_corpus') || '{}') } catch {}
       for (const [id, g] of Object.entries(goalsConfig)) {
-        const { error } = await upsertGoal({ id, ...g }, { cache: false })
+        const { error } = await upsertGoal({ id, ...g, currentCorpus: corpusMap[id]?.amount ?? 0 }, { cache: false })
         if (error) errors.push(`goal ${id}: ${error}`)
       }
     }

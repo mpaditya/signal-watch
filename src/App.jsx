@@ -594,7 +594,13 @@ export default function App(){
         // Also keep the normalized goals table live (one row per goal), so it reflects
         // edits without needing a manual "Migrate to Cloud". cache:false avoids polluting
         // the artha_goals_v4 extra-goals localStorage cache with primary goals.
-        Object.entries(goalsConfig).forEach(([gid,g])=>{cloudUpsertGoal({id:gid,...g},{cache:false})})
+        // Merge in the current corpus (artha_goal_corpus, owned by GoalDashboard) so the
+        // goals-table corpus column stays correct instead of being overwritten with 0.
+        let corpusMap={}
+        try{corpusMap=JSON.parse(localStorage.getItem('artha_goal_corpus')||'{}')}catch{}
+        Object.entries(goalsConfig).forEach(([gid,g])=>{
+          cloudUpsertGoal({id:gid,...g,currentCorpus:corpusMap[gid]?.amount??0},{cache:false})
+        })
       },1500)
     }
   },[goalsConfig])

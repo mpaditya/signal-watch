@@ -32,6 +32,11 @@ import {
 } from '../goalUtils';
 // AR-4: log goal create/update decisions to the audit trail
 import { logDecision, ACTION_TYPES } from '../decisions';
+// AR-1: corpus cloud sync (write on update, read-back on login)
+import {
+  isSupabaseConfigured, isAuthenticated, fetchGoals as cloudFetchGoals,
+  upsertGoal as cloudUpsertGoal,
+} from '../supabase';
 
 // ─── Bridge: convert existing goalsConfig to v4 goal objects ───────
 // Existing format:
@@ -148,6 +153,30 @@ export default function GoalDashboard({
   // SW-9: archive view is collapsed by default — it's a recovery tool, not a primary view.
   const [showArchive, setShowArchive] = useState(false);
 
+  // AR-1 corpus read-back: on login, hydrate corpus amounts from the cloud goals table
+  // (corpus column). This is how a browser-wiped or second device recovers real invested
+  // values. Only overwrite a local entry when the cloud has a positive value, so we never
+  // clobber a locally-entered amount that hasn't synced yet with a 0.
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !isAuthenticated()) return;
+    cloudFetchGoals().then(rows => {
+      if (!Array.isArray(rows) || rows.length === 0) return;
+      setCorpusData(prev => {
+        const next = { ...prev };
+        let changed = false;
+        for (const row of rows) {
+          const amt = Number(row.corpus || 0);
+          if (amt > 0 && (next[row.id]?.amount ?? 0) !== amt) {
+            next[row.id] = { ...next[row.id], amount: amt, updatedAt: (row.updated_at || '').slice(0, 10) };
+            changed = true;
+          }
+        }
+        if (changed) saveCorpusData(next);
+        return changed ? next : prev;
+      });
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Build unified goals array: legacy goals from goalsConfig + extra goals NOT already in goalsConfig
   // (New goals get injected into goalsConfig on save, so we skip them from extraGoals to avoid dupes)
   // SW-9: split active vs archived using the abandonedIds list owned by App.jsx.
@@ -226,9 +255,19 @@ export default function GoalDashboard({
     };
     setCorpusData(updated);
     saveCorpusData(updated);
+
+    // AR-1: write the new corpus value through to the cloud goals table (corpus column),
+    // so it's backed up and recoverable. upsertGoal no-ops when offline/not authenticated.
+    // cache:false: don't add this goal to the artha_goals_v4 extra-goals cache.
+    const goalCfg = (goalsConfig || {})[corpusGoalId] || extraGoals.find(g => g.id === corpusGoalId) || {};
+    cloudUpsertGoal(
+      { id: corpusGoalId, ...goalCfg, currentCorpus: parseFloat(corpusInput) || 0 },
+      { cache: false }
+    );
+
     setCorpusGoalId(null);
     setCorpusInput('');
-  }, [corpusGoalId, corpusInput, corpusData]);
+  }, [corpusGoalId, corpusInput, corpusData, goalsConfig, extraGoals]);
 
   // ── Edit ────────────────────────────────────────────────────────
   const handleEdit = useCallback((goal) => {
@@ -238,14 +277,26 @@ export default function GoalDashboard({
 
   // ── Save from GoalForm ──────────────────────────────────────────
   const handleFormSave = useCallback((goal) => {
-    // AR-4: log the decision. Existing goal (legacy, an extra goal, or already in
-    // goalsConfig) → GOAL_UPDATE; otherwise a brand-new goal → GOAL_CREATE.
-    const isExisting = goal._isLegacy
-      || extraGoals.some(g => g.id === goal.id)
-      || Object.prototype.hasOwnProperty.call(goalsConfig || {}, goal.id);
-    logDecision(isExisting ? ACTION_TYPES.GOAL_UPDATE : ACTION_TYPES.GOAL_CREATE, {
-      notes: `Goal "${goal.label}" ${isExisting ? 'updated' : 'created'}`,
-    });
+    // AR-4: log the decision. A brand-new goal → GOAL_CREATE. An edit → GOAL_UPDATE ONLY
+    // if a MATERIAL field changed (target, horizon, or total SIP). A cosmetic-only edit
+    // (just renaming the goal or changing its emoji) is intentionally not logged — it's
+    // not an investment decision and would only clutter the audit trail.
+    const prev = goal._isLegacy
+      ? (goalsConfig || {})[goal.id]
+      : extraGoals.find(g => g.id === goal.id);
+    const sumSip = (funds) => funds
+      ? Object.values(funds).reduce((s, v) => s + (typeof v === 'number' ? v : Number(v?.monthlySIP || 0)), 0)
+      : 0;
+    const materialSig = (g) => g ? JSON.stringify({
+      target: Number(g.targetLakh || 0),
+      years:  Number(g.totalYears ?? g.yearsLeft ?? 0),
+      sip:    sumSip(g.funds),
+    }) : null;
+    if (!prev) {
+      logDecision(ACTION_TYPES.GOAL_CREATE, { notes: `Goal "${goal.label}" created` });
+    } else if (materialSig(goal) !== materialSig(prev)) {
+      logDecision(ACTION_TYPES.GOAL_UPDATE, { notes: `Goal "${goal.label}" updated` });
+    }
 
     if (goal._isLegacy) {
       // Sync corpus + CAGR to separate storage
