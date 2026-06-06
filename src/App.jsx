@@ -438,9 +438,11 @@ export default function App(){
   // Start as true if Supabase not configured (local mode always allowed).
   // Start as true if user explicitly skipped auth in this session (sessionStorage flag).
   const[authReady,setAuthReady]=useState(()=>{
+    // If Supabase is not configured, skip auth entirely (local-only mode)
     if(!isSupabaseConfigured())return true
-    // User previously chose "Continue without account" in this browser session
-    return sessionStorage.getItem('artha_auth_skipped')==='1'
+    // Otherwise always show the modal on fresh load — no sessionStorage skip.
+    // "Continue without account" only bypasses for the current page load (in-memory).
+    return false
   })
   // AR-2: Track current app tab (signals | history | decisions)
   const[appTab,setAppTab]=useState('signals')
@@ -459,6 +461,16 @@ export default function App(){
   const[peOverrideDraft,setPeOverrideDraft]=useState({largecap:'',midcap:'',smallcap:''})
   // SW-9: Track archived goal IDs. Soft-delete — keeps underlying data intact for restore.
   const[abandonedIds,setAbandonedIds]=useState(()=>loadAbandoned())
+  // AR-1: Migration banner — shown after sign-in if localStorage has existing data
+  const[migrating,setMigrating]=useState(false)
+  const[migrateDone,setMigrateDone]=useState(false)
+  const[migrateError,setMigrateError]=useState(null)
+  // Show banner if: authenticated + Supabase configured + localStorage has goals
+  // authReady is in React state so this recalculates whenever auth changes
+  // Check either goals key — artha_config_v1 (Signal Watch SIP goals) or artha_goals_v4 (Goal Dashboard goals)
+  const hasLocalData=!!(localStorage.getItem('artha_config_v1')||localStorage.getItem('artha_goals_v4'))
+  const showMigrateBanner=authReady&&isSupabaseConfigured()&&isAuthenticated()&&!migrateDone&&
+    hasLocalData&&!migrating
 
   // AR-2: On app load, check the URL hash for a magic link token.
   // Supabase redirects back to the app with a fragment like:
@@ -512,13 +524,22 @@ export default function App(){
     setAuthReady(true)
   },[])
   const handleSkipAuth=useCallback(()=>{
-    sessionStorage.setItem('artha_auth_skipped','1')
+    // In-memory only — modal reappears on next page load
     setAuthReady(true)
   },[])
   const handleSignOut=useCallback(()=>{
     clearSession()
-    sessionStorage.removeItem('artha_auth_skipped')
     setAuthReady(false)
+  },[])
+
+  // AR-1: Run one-time migration of localStorage → Supabase
+  const handleMigrate=useCallback(async()=>{
+    setMigrating(true)
+    setMigrateError(null)
+    const{success,errors}=await migrateLocalStorageToSupabase()
+    setMigrating(false)
+    if(success){setMigrateDone(true)}
+    else{setMigrateError(errors.join(', '))}
   },[])
 
   // Persist config to localStorage whenever it changes
@@ -734,6 +755,35 @@ Using Google Search, find the CURRENT trailing P/E ratio (TTM — trailing twelv
         </div>
       </nav>
       {llmOpen&&<LLMSettings onClose={()=>setLlmOpen(false)}/>}
+
+      {/* AR-1: Migration banner — appears after sign-in when localStorage has existing data */}
+      {showMigrateBanner&&(
+        <div style={{background:'#E6F1FB',borderBottom:'0.5px solid #B8D4F0',padding:'8px 1.5rem',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+          <div style={{fontSize:12,color:'#185FA5'}}>
+            ☁️ <strong>Sync your data to the cloud.</strong> Your existing goals and config are saved locally — migrate them to Supabase so they're safe and accessible anywhere.
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <button onClick={handleMigrate} disabled={migrating}
+              style={{padding:'4px 14px',background:'#185FA5',color:'#fff',border:'none',borderRadius:99,fontSize:12,fontWeight:500,cursor:'pointer'}}>
+              {migrating?'Migrating…':'Migrate to cloud'}
+            </button>
+            <button onClick={()=>setMigrateDone(true)}
+              style={{padding:'4px 10px',background:'transparent',color:'#185FA5',border:'0.5px solid #185FA5',borderRadius:99,fontSize:11,cursor:'pointer'}}>
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+      {migrateDone&&isAuthenticated()&&(
+        <div style={{background:'#EAF3DE',borderBottom:'0.5px solid #A8D08D',padding:'6px 1.5rem',fontSize:12,color:'#3B6D11'}}>
+          ✅ Data synced to cloud. Your goals and config are now backed up in Supabase.
+        </div>
+      )}
+      {migrateError&&(
+        <div style={{background:'#FCEBEB',borderBottom:'0.5px solid #E8A0A0',padding:'6px 1.5rem',fontSize:12,color:'#A32D2D'}}>
+          ⚠️ Migration partially failed: {migrateError}. Your local data is untouched.
+        </div>
+      )}
 
       <header style={{background:'var(--bg)',borderBottom:bs,padding:'1.25rem 1.5rem 1rem'}}>
         <div style={{maxWidth:960,margin:'0 auto'}}>

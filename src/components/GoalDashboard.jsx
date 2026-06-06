@@ -108,7 +108,10 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
     targetLakh: legacyGoal.targetLakh || 0,
     assumedCAGR: corpus.assumedCAGR || typeDef?.defaultCAGR || 12,
     funds,
-    status: GOAL_STATUSES.ACTIVE,
+    // SW-14: legacy goals persist their status in corpus storage (corpus.status).
+    // Defaults to ACTIVE on first load. This lets Pause/Resume/Achieved work on
+    // existing goals, not just newly-created v4 goals.
+    status: corpus.status || GOAL_STATUSES.ACTIVE,
     createdAt: corpus.createdAt || now.toISOString(),
     _isLegacy: true,
   };
@@ -327,9 +330,18 @@ export default function GoalDashboard({
   // For localStorage fallback: 'achieved' goals are treated like 'abandoned' — added
   // to abandonedIds so they disappear from the active view.
   const handleStatusChange = useCallback((goalId, newStatus) => {
+    // Persist status for v4 (newly-created) goals
     setExtraGoals(prev => {
       const updated = prev.map(g => g.id === goalId ? { ...g, status: newStatus } : g);
       saveExtraGoals(updated);
+      return updated;
+    });
+    // SW-14 fix: also persist status for LEGACY goals via corpus storage, since
+    // legacy goals aren't in extraGoals. legacyToV4() reads corpus.status back on
+    // next render, so Pause/Resume/Achieved all work on existing goals.
+    setCorpusData(prev => {
+      const updated = { ...prev, [goalId]: { ...prev[goalId], status: newStatus } };
+      saveCorpusData(updated);
       return updated;
     });
     // SW-14: When a goal is marked achieved, archive it from the active view.
@@ -419,7 +431,7 @@ export default function GoalDashboard({
             goal={goal}
             onEdit={handleEdit}
             onUpdateCorpus={openCorpusUpdate}
-            onStatusChange={goal._isLegacy ? undefined : handleStatusChange}
+            onStatusChange={handleStatusChange}
             onArchive={onArchive}
           />
         ))}
