@@ -47,13 +47,36 @@ async function supabaseRequest(method, table, body = null, params = '') {
 }
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
-// In-memory auth session. NOT stored in localStorage to avoid token exposure (DEC-AR2).
-// Python analogy: module-level variable (like a singleton) that holds session state.
-let _session = null
+// Auth session persisted in sessionStorage: survives page reload but is cleared when
+// the browser tab closes. Chosen over localStorage to shrink the XSS exposure window
+// (token isn't retained across browser restarts) while still fixing the "re-login on
+// every reload" annoyance of a purely in-memory session. NOT localStorage (would persist
+// the token indefinitely). Python analogy: a module-level singleton that also writes a
+// backup copy to a per-tab scratch store so a reload can rehydrate it.
+const SESSION_KEY = 'artha_auth_session'
+
+function loadSessionFromStorage() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+// Rehydrate on module load so a page reload restores the logged-in session.
+let _session = loadSessionFromStorage()
 
 export function getSession()              { return _session }
-export function setSession(session)       { _session = session }
-export function clearSession()            { _session = null }
+export function setSession(session)       {
+  _session = session
+  try {
+    if (session) sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    else sessionStorage.removeItem(SESSION_KEY)
+  } catch {}
+}
+export function clearSession()            {
+  _session = null
+  try { sessionStorage.removeItem(SESSION_KEY) } catch {}
+}
 export function isAuthenticated()         { return !!_session }
 
 // Get the authenticated user's ID (used as user_id in all table rows for RLS)

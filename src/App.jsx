@@ -440,8 +440,10 @@ export default function App(){
   const[authReady,setAuthReady]=useState(()=>{
     // If Supabase is not configured, skip auth entirely (local-only mode)
     if(!isSupabaseConfigured())return true
-    // Otherwise always show the modal on fresh load — no sessionStorage skip.
-    // "Continue without account" only bypasses for the current page load (in-memory).
+    // If a session was rehydrated from sessionStorage (survives reload, not tab close),
+    // the user is still logged in — skip the modal.
+    if(isAuthenticated())return true
+    // Otherwise show the modal. "Continue without account" bypasses for this page load only.
     return false
   })
   // AR-2: Track current app tab (signals | history | decisions)
