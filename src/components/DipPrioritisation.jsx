@@ -27,12 +27,14 @@
  * No Tailwind, no CSS frameworks — consistent with CLAUDE.md design principles.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   computeConvictionScore,
   allocateLumpSum,
   GOAL_TYPES,
 } from '../goalUtils';
+// AR-4: log a BUY_DIP decision when the user acts on a ranked suggestion
+import { logDecision, ACTION_TYPES } from '../decisions';
 
 // ─── Conviction color bands ─────────────────────────────────────────
 // These map conviction score ranges to visual indicators.
@@ -100,6 +102,21 @@ export default function DipPrioritisation({
   healthMap,         // object: { goalId: { onTrackPct, status, ... } } — from GoalDashboard
 }) {
   const bs = '0.5px solid var(--border)';
+
+  // AR-4: track which fund-goal pairs the user has logged a BUY_DIP decision for,
+  // so the button can show a confirmed state. Keyed by `${fundId}_${goalId}`.
+  const [logged, setLogged] = useState({});
+
+  const handleLogBuyDip = (entry, amount) => {
+    logDecision(ACTION_TYPES.BUY_DIP, {
+      scheme_code: entry.fundId,
+      fund_name: entry.fundName,
+      amount,
+      signal_at_time: entry.signalLabel,
+      notes: `Deployed ₹${amount} into ${entry.fundName} for ${entry.goalLabel} (conviction ${entry.score})`,
+    });
+    setLogged(prev => ({ ...prev, [`${entry.fundId}_${entry.goalId}`]: true }));
+  };
 
   // ── Compute scored entries ──────────────────────────────────────
   // For each fund with a Buy Dip signal, iterate over every goal that
@@ -319,12 +336,29 @@ export default function DipPrioritisation({
               </div>
             </div>
 
-            {/* Explanation line */}
+            {/* Explanation line + Log decision button */}
             <div style={{
-              fontSize: 10, color: 'var(--text-secondary)', marginTop: 5,
-              marginLeft: 34, lineHeight: 1.5,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              gap: 10, marginTop: 5, marginLeft: 34,
             }}>
-              {explanation}
+              <div style={{ fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.5, flex: 1 }}>
+                {explanation}
+              </div>
+              {/* AR-4: "You decide, AI advises" — the user explicitly logs the decision they made */}
+              {logged[`${entry.fundId}_${entry.goalId}`] ? (
+                <span style={{ fontSize: 10, color: '#3B6D11', fontWeight: 500, flexShrink: 0 }}>✓ Logged</span>
+              ) : (
+                <button
+                  onClick={() => handleLogBuyDip(entry, amount)}
+                  style={{
+                    flexShrink: 0, padding: '3px 10px', borderRadius: 99, fontSize: 10,
+                    border: '0.5px solid var(--border-strong)', background: 'var(--bg)',
+                    color: 'var(--text-secondary)', cursor: 'pointer',
+                  }}
+                >
+                  Log decision
+                </button>
+              )}
             </div>
           </div>
         );

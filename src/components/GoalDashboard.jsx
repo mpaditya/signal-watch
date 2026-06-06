@@ -30,6 +30,8 @@ import {
   createGoal,
   updateGoal,
 } from '../goalUtils';
+// AR-4: log goal create/update decisions to the audit trail
+import { logDecision, ACTION_TYPES } from '../decisions';
 
 // ─── Bridge: convert existing goalsConfig to v4 goal objects ───────
 // Existing format:
@@ -236,6 +238,15 @@ export default function GoalDashboard({
 
   // ── Save from GoalForm ──────────────────────────────────────────
   const handleFormSave = useCallback((goal) => {
+    // AR-4: log the decision. Existing goal (legacy, an extra goal, or already in
+    // goalsConfig) → GOAL_UPDATE; otherwise a brand-new goal → GOAL_CREATE.
+    const isExisting = goal._isLegacy
+      || extraGoals.some(g => g.id === goal.id)
+      || Object.prototype.hasOwnProperty.call(goalsConfig || {}, goal.id);
+    logDecision(isExisting ? ACTION_TYPES.GOAL_UPDATE : ACTION_TYPES.GOAL_CREATE, {
+      notes: `Goal "${goal.label}" ${isExisting ? 'updated' : 'created'}`,
+    });
+
     if (goal._isLegacy) {
       // Sync corpus + CAGR to separate storage
       const updated = {
@@ -332,7 +343,7 @@ export default function GoalDashboard({
     }
     setEditingGoal(null);
     setFormOpen(false);
-  }, [corpusData, onUpdateGoalsConfig]);
+  }, [corpusData, onUpdateGoalsConfig, extraGoals, goalsConfig]);
 
   // ── Status Change (extra goals only) ────────────────────────────
   // SW-14: when Supabase is configured, also persists status to the goals table.

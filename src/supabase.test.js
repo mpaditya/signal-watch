@@ -246,4 +246,46 @@ describe('supabase.js — authenticated requests use the user access_token (RLS)
     expect(body.user_id).toBe('user-42')
     mod.clearSession()
   })
+
+  // AR-1 schema-mapping guard: would have caught the bug where upsertGoal POSTed the raw
+  // goal object (label/yearsLeft/funds…) instead of the goals-table columns.
+  it('goalToRow maps app goal fields onto the goals-table columns', async () => {
+    const mod = await import('./supabase.js')
+    mod.setSession({ access_token: 't', user: { id: 'u9' } })
+    const row = mod.goalToRow({
+      id: 'retirement', label: 'Retirement', goalType: 'retirement',
+      targetLakh: 500, totalYears: 22, yearsLeft: 20, startDate: '2026-01-01',
+      currentCorpus: 800000, status: 'active',
+      funds: { a: { monthlySIP: 5000 }, b: { monthlySIP: 3000 } },
+    })
+    expect(row).toMatchObject({
+      id: 'retirement', user_id: 'u9', type: 'retirement', name: 'Retirement',
+      target_lakh: 500, horizon: 22, years_left: 20, start_date: '2026-01-01',
+      corpus: 800000, sip_amount: 8000, status: 'active',
+    })
+    expect(row.config_json).toBeTruthy() // full object preserved
+    mod.clearSession()
+  })
+
+  it('goalToRow sums legacy numeric funds for sip_amount', async () => {
+    const mod = await import('./supabase.js')
+    mod.setSession({ access_token: 't', user: { id: 'u9' } })
+    const row = mod.goalToRow({ id: 'g', label: 'G', funds: { a: 5000, b: 2000 } })
+    expect(row.sip_amount).toBe(7000)
+    mod.clearSession()
+  })
+
+  it('upsertGoal POSTs the mapped row (target_lakh), not the raw goal (label)', async () => {
+    const mod = await import('./supabase.js')
+    mod.setSession({ access_token: 't', user: { id: 'u9' } })
+    let body
+    vi.stubGlobal('fetch', vi.fn(async (_url, opts) => {
+      body = JSON.parse(opts.body)
+      return { ok: true, status: 200, json: async () => [{}] }
+    }))
+    await mod.upsertGoal({ id: 'g1', label: 'Edu', targetLakh: 75, yearsLeft: 12, funds: { a: 2000 } })
+    expect(body.target_lakh).toBe(75)   // mapped column present
+    expect(body.label).toBeUndefined()  // raw key not sent (would 400)
+    mod.clearSession()
+  })
 })

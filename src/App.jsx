@@ -11,10 +11,13 @@ import{LineChart,Line,ResponsiveContainer,Tooltip}from'recharts'
 // AR-1/AR-2: Supabase auth helpers
 import{
   isSupabaseConfigured,setSession,clearSession,isAuthenticated,
-  verifyMagicLinkToken,migrateLocalStorageToSupabase
+  verifyMagicLinkToken,migrateLocalStorageToSupabase,
+  // AR-1 write-through/read-back: cloud config helpers (aliased to avoid clashing with
+  // App.jsx's own local loadConfig/saveConfig localStorage helpers below).
+  fetchConfig as cloudFetchConfig, saveConfig as cloudSaveConfig
 }from'./supabase'
 // AR-4: Decision queue flush on auth
-import{flushDecisionQueue}from'./decisions'
+import{flushDecisionQueue,logDecision,ACTION_TYPES}from'./decisions'
 
 const FUNDS=[
   {id:'niscf', name:'Nippon India Small Cap',     searchQ:'Nippon India Small Cap',      goals:['retirement','education'],category:'Small Cap',       index:'smallcap'},
@@ -562,8 +565,32 @@ export default function App(){
     else{setMigrateError(errors.join(', '))}
   },[])
 
-  // Persist config to localStorage whenever it changes
-  useEffect(()=>saveConfig(goalsConfig),[goalsConfig])
+  // AR-1 read-back (DEC-048/049): on login, the cloud config blob is authoritative —
+  // hydrate goalsConfig from it. localStorage is just a write-through cache. If the cloud
+  // has no config yet (first-time user), keep local data; the migration banner seeds it.
+  const cloudHydratedRef=useRef(false)
+  useEffect(()=>{
+    if(!isSupabaseConfigured()||!isAuthenticated()||cloudHydratedRef.current)return
+    cloudHydratedRef.current=true
+    cloudFetchConfig().then(cloud=>{
+      if(cloud&&Object.keys(cloud).length>0){
+        setGoalsConfig(cloud)
+        console.log('[AR-1] Hydrated goalsConfig from cloud')
+      }
+    }).catch(e=>console.warn('[AR-1] cloud read-back failed:',e.message))
+  },[authReady]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist config: always write the localStorage cache immediately. When authenticated,
+  // also write through to the cloud config table — debounced 1.5s so rapid edits (e.g.
+  // typing a SIP amount) collapse into one network write instead of one per keystroke.
+  const cloudSaveTimer=useRef(null)
+  useEffect(()=>{
+    saveConfig(goalsConfig) // immediate local cache
+    if(isSupabaseConfigured()&&isAuthenticated()){
+      clearTimeout(cloudSaveTimer.current)
+      cloudSaveTimer.current=setTimeout(()=>{cloudSaveConfig(goalsConfig)},1500)
+    }
+  },[goalsConfig])
   // SW-3: Persist lump sum to localStorage so it survives page reloads
   useEffect(()=>saveLumpSum(lumpSum),[lumpSum])
   // SW-9: Persist archived goal IDs
@@ -595,6 +622,20 @@ export default function App(){
 
   const updateGoalField=(gid,field,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],[field]:['yearsLeft','targetLakh'].includes(field)?Number(val):val}}))
   const updateFundSIP=(gid,fid,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],funds:{...p[gid].funds,[fid]:Number(val)}}}))
+  // AR-4: capture a SIP input's value on focus so onBlur can log SIP_CHANGE only when it
+  // actually changed (logging per keystroke would spam the audit trail).
+  const sipFocusRef=useRef({})
+  const onSipFocus=(gid,fid,val)=>{sipFocusRef.current[`${gid}_${fid}`]=Number(val)}
+  const onSipBlur=(gid,fid,fundName,goalLabel,val)=>{
+    const before=sipFocusRef.current[`${gid}_${fid}`]
+    const after=Number(val)
+    if(before!==undefined&&before!==after){
+      logDecision(ACTION_TYPES.SIP_CHANGE,{
+        fund_name:fundName,amount:after,
+        notes:`SIP for "${fundName}" in ${goalLabel}: ₹${before} → ₹${after}`
+      })
+    }
+  }
   const updateSIPDate=(gid,fid,val)=>setGoalsConfig(p=>({...p,[gid]:{...p[gid],sipDates:{...p[gid].sipDates,[fid]:Number(val)}}}))
 
   // SW-7: Fetch P/E via Gemini + Google Search. Returns parsed {largecap,midcap,smallcap,nifty500}
@@ -917,7 +958,10 @@ Using Google Search, find the CURRENT trailing P/E ratio (TTM — trailing twelv
                       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
                         <div>
                           <div style={{fontSize:9,color:'var(--text-secondary)',marginBottom:3}}>Monthly SIP (₹)</div>
-                          <input type="number" min="0" step="500" value={g.funds?.[f.id]||0} onChange={e=>updateFundSIP(gid,f.id,e.target.value)}
+                          <input type="number" min="0" step="500" value={g.funds?.[f.id]||0}
+                            onChange={e=>updateFundSIP(gid,f.id,e.target.value)}
+                            onFocus={e=>onSipFocus(gid,f.id,e.target.value)}
+                            onBlur={e=>onSipBlur(gid,f.id,f.name,g.label,e.target.value)}
                             style={{width:'100%',padding:'4px 6px',border:bs,borderRadius:'var(--radius-md)',fontSize:12,background:'var(--bg)',color:'var(--text-primary)'}}/>
                         </div>
                         <div>

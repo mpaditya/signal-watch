@@ -34,11 +34,18 @@ async function supabaseRequest(method, table, body = null, params = '') {
   // BUG FIX: this previously always sent the anon key, so every authenticated
   // INSERT/UPDATE was rejected by RLS and silently fell back to the offline queue.
   const token = getSession()?.access_token ?? SUPABASE_ANON
+  // PostgREST upsert: a plain POST with a duplicate primary key returns 409 Conflict.
+  // To make POST behave as INSERT-or-UPDATE we must add resolution=merge-duplicates
+  // whenever the caller passed an on_conflict target. Without this, every write-through
+  // of an existing goal/config row failed.
+  const isUpsert = params.includes('on_conflict')
   const headers = {
     'apikey':        SUPABASE_ANON,
     'Authorization': `Bearer ${token}`,
     'Content-Type':  'application/json',
-    'Prefer':        method === 'POST' ? 'return=representation' : '',
+    'Prefer':        method === 'POST'
+      ? (isUpsert ? 'resolution=merge-duplicates,return=representation' : 'return=representation')
+      : '',
   }
   const opts = { method, headers }
   if (body) opts.body = JSON.stringify(body)
@@ -170,6 +177,35 @@ export async function fetchGoals() {
   }
 }
 
+// Map an app goal object (legacy goalsConfig entry OR v4 goal) onto the `goals` table
+// columns. The full rich object is preserved in config_json so nothing is lost; the
+// scalar columns (type, name, target_lakh, …) are extracted for querying + SW-14 status.
+// BUG FIX: upsertGoal previously POSTed the raw goal object, whose keys (label, yearsLeft,
+// funds, emoji, …) don't match the table columns, so every insert was rejected with a 400.
+export function goalToRow(goal) {
+  // Total monthly SIP: legacy funds are { fid: amount }, v4 funds are { fid: { monthlySIP } }
+  let sip = 0
+  if (goal.funds) {
+    for (const v of Object.values(goal.funds)) {
+      sip += typeof v === 'number' ? v : Number(v?.monthlySIP || 0)
+    }
+  }
+  return {
+    id:          goal.id,
+    user_id:     getUserId(),
+    type:        goal.goalType || goal.type || 'retirement',
+    name:        goal.label || goal.name || 'Goal',
+    target_lakh: Number(goal.targetLakh ?? 0),
+    horizon:     Number(goal.totalYears ?? goal.yearsLeft ?? 0),
+    years_left:  Number(goal.yearsLeft ?? goal.totalYears ?? 0),
+    start_date:  goal.startDate || null,
+    corpus:      Number(goal.currentCorpus ?? 0),
+    sip_amount:  sip,
+    config_json: goal,
+    status:      goal.status || 'active',
+  }
+}
+
 export async function upsertGoal(goal) {
   // Always write to localStorage (write-through cache — DEC-048)
   try {
@@ -181,9 +217,8 @@ export async function upsertGoal(goal) {
 
   if (!isSupabaseConfigured() || !isAuthenticated()) return { data: goal, error: null }
   try {
-    const row = { ...goal, user_id: getUserId() }
-    const data = await supabaseRequest('POST', 'goals', row,
-      '?on_conflict=id')
+    const row = goalToRow(goal)
+    const data = await supabaseRequest('POST', 'goals', row, '?on_conflict=id')
     return { data, error: null }
   } catch (e) {
     return { data: null, error: e.message }
