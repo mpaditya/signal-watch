@@ -26,6 +26,9 @@ import {
   instrumentMaturityAmount,
   instrumentValueAtTarget,
   blendedReturn,
+  createGoal,
+  updateGoal,
+  computeGoalHealth,
 } from './goalUtils.js'
 
 // ISO date `years` from now (negative = past). For instrument maturity/target tests.
@@ -260,5 +263,54 @@ describe('SW-16 composite projection — per-instrument returns (MF + RD + FD)',
     // MF SIP ₹10k @13% + RD ₹10k @7% → blended 10%
     const goal = { assumedCAGR: 13, currentCorpus: 0, funds: { a: { monthlySIP: 10000, rate: 13 } }, instruments: [{ type: 'RD', monthly: 10000, rate: 7 }] }
     expect(blendedReturn(goal)).toBe(10)
+  })
+})
+
+describe('SW-16 CRUD — createGoal / updateGoal preserve funds[].rate and instruments', () => {
+  it('createGoal persists per-fund rate and the instruments array', () => {
+    const g = createGoal({
+      label: 'Car', goalType: 'car', totalYears: 4, targetLakh: 10,
+      funds: { hdfcsc: { monthlySIP: 5000, sipDate: 5, rate: 13.5 } },
+      instruments: [{ id: 'rd1', type: 'RD', label: 'My RD', monthly: 8000, rate: 7, startDate: '2026-01-01', maturityDate: '2028-01-01' }],
+    })
+    // per-fund rate survives verbatim
+    expect(g.funds.hdfcsc.rate).toBe(13.5)
+    // instruments array survives verbatim
+    expect(Array.isArray(g.instruments)).toBe(true)
+    expect(g.instruments).toHaveLength(1)
+    expect(g.instruments[0]).toMatchObject({ type: 'RD', monthly: 8000, rate: 7 })
+  })
+
+  it('createGoal defaults instruments to an empty array when none supplied', () => {
+    const g = createGoal({ label: 'Trip', goalType: 'travel', totalYears: 2, targetLakh: 5 })
+    expect(g.instruments).toEqual([])
+  })
+
+  it('updateGoal carries through new instruments + per-fund rate without dropping them', () => {
+    const base = createGoal({ label: 'House', goalType: 'house', totalYears: 7, targetLakh: 100, funds: {} })
+    const updated = updateGoal(base, {
+      funds: { mirae: { monthlySIP: 10000, rate: 12 } },
+      instruments: [{ id: 'fd1', type: 'FD', label: 'Bank FD', principal: 200000, rate: 7.2, startDate: '2026-01-01', maturityDate: '2031-01-01' }],
+    })
+    expect(updated.funds.mirae.rate).toBe(12)
+    expect(updated.instruments).toHaveLength(1)
+    expect(updated.instruments[0]).toMatchObject({ type: 'FD', principal: 200000, rate: 7.2 })
+    // unrelated fields preserved
+    expect(updated.goalType).toBe('house')
+    expect(updated.targetLakh).toBe(100)
+  })
+
+  it('a goal WITH an RD instrument projects higher than the same goal without it', () => {
+    // computeGoalHealth uses projectGoalComposite, so an added RD must increase the projection.
+    const target = isoIn(5)
+    const withoutRD = createGoal({ label: 'Edu', goalType: 'education', totalYears: 5, targetLakh: 50,
+      funds: { hdfcsc: { monthlySIP: 5000, rate: 12 } } })
+    withoutRD.targetDate = target
+    const withRD = { ...withoutRD, instruments: [
+      { id: 'rd1', type: 'RD', monthly: 10000, rate: 7, startDate: isoIn(0), maturityDate: isoIn(10) },
+    ] }
+    const hNo = computeGoalHealth(withoutRD)
+    const hYes = computeGoalHealth(withRD)
+    expect(hYes.projected).toBeGreaterThan(hNo.projected)
   })
 })

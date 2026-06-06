@@ -690,6 +690,11 @@ export function createGoal({
   currentCorpus = 0,
   assumedCAGR,
   funds = {},
+  // SW-16: a goal can be funded by a MIX of instruments. `instruments` is an array of
+  // RD/FD deposits (each with its own fixed `rate`), and each MF entry in `funds` may
+  // carry an optional per-fund `rate`. These are persisted verbatim — the projection
+  // engine (projectGoalComposite) reads them. Defaults keep legacy single-CAGR goals identical.
+  instruments = [],
 }) {
   const typeDef = GOAL_TYPES[goalType];
   if (!typeDef) throw new Error(`Unknown goal type: ${goalType}`);
@@ -710,7 +715,9 @@ export function createGoal({
     corpusUpdatedAt: currentCorpus > 0 ? now : null,
     targetLakh: targetLakh || 0,
     assumedCAGR: assumedCAGR ?? typeDef.defaultCAGR,
+    // Preserve per-fund rate: funds is { fid: { monthlySIP, sipDate, rate? } }.
     funds: funds || {},
+    instruments: Array.isArray(instruments) ? instruments : [],
     status: GOAL_STATUSES.ACTIVE,
     createdAt: new Date().toISOString(),
   };
@@ -721,6 +728,9 @@ export function createGoal({
  * Automatically updates corpusUpdatedAt if currentCorpus changes.
  */
 export function updateGoal(existingGoal, updates) {
+  // Shallow merge: any field present in `updates` overwrites the existing goal.
+  // SW-16: this naturally carries through `funds` (incl. per-fund `rate`) and the
+  // `instruments` array when the form passes them — no special handling needed.
   const updated = { ...existingGoal, ...updates };
 
   // If corpus changed, update the timestamp

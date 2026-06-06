@@ -19,17 +19,8 @@ import{
 }from'./supabase'
 // AR-4: Decision queue flush on auth
 import{flushDecisionQueue,logDecision,ACTION_TYPES}from'./decisions'
-
-const FUNDS=[
-  {id:'niscf', name:'Nippon India Small Cap',     searchQ:'Nippon India Small Cap',      goals:['retirement','education'],category:'Small Cap',       index:'smallcap'},
-  {id:'hdfcsc',name:'HDFC Small Cap',             searchQ:'HDFC Small Cap Fund',         goals:['retirement','education'],category:'Small Cap',       index:'smallcap'},
-  {id:'hdfcmd',name:'HDFC Mid-Cap Opportunities', searchQ:'HDFC Mid Cap Fund',           goals:['retirement','education'],category:'Mid Cap',         index:'midcap'},
-  {id:'nimcap',name:'Nippon India MultiCap',       searchQ:'Nippon India Multi Cap',      goals:['retirement'],           category:'Multi Cap',       index:'nifty500'},
-  {id:'hdfcfc',name:'HDFC Flexi Cap',             searchQ:'HDFC Flexi Cap Fund',         goals:['retirement','education'],category:'Flexi Cap',       index:'nifty500'},
-  {id:'mirae', name:'Mirae Large & Midcap',       searchQ:'Mirae Asset Large',           goals:['retirement','education'],category:'Large & Mid Cap', index:'midcap'},
-  {id:'sbiarb',name:'SBI Arbitrage Opps',          searchQ:'SBI Arbitrage Opportunities', goals:['education'],            category:'Arbitrage',       index:null},
-  {id:'sbisc', name:'SBI Small Cap',              searchQ:'SBI Small Cap Fund',          goals:['retirement','education'],category:'Small Cap',       index:'smallcap'},
-]
+// SW-15: dynamic fund universe — default funds + user-added/archived overlay in localStorage.
+import{loadUserFunds,saveUserFunds,effectiveFunds,mergeFunds,addFund,archiveFund,restoreFund}from'./funds'
 
 const CAT={
   'Small Cap':       {bg:'#FAECE7',text:'#993C1D'},
@@ -467,6 +458,18 @@ export default function App(){
   const[peOverrideDraft,setPeOverrideDraft]=useState({largecap:'',midcap:'',smallcap:''})
   // SW-9: Track archived goal IDs. Soft-delete — keeps underlying data intact for restore.
   const[abandonedIds,setAbandonedIds]=useState(()=>loadAbandoned())
+  // SW-15: dynamic fund universe. `fundOverlay` = {added, archivedIds} persisted to
+  // localStorage. FUNDS below is the EFFECTIVE (non-archived) list every consumer reads —
+  // signal cards, P/E, dip scoring, goal fund-picker. allFunds keeps archived ones for the
+  // "manage funds" UI so they can be restored. No hard delete anywhere.
+  const[fundOverlay,setFundOverlay]=useState(()=>loadUserFunds())
+  const FUNDS=useMemo(()=>effectiveFunds(fundOverlay),[fundOverlay])
+  const allFunds=useMemo(()=>mergeFunds(fundOverlay),[fundOverlay])
+  // Persist overlay + pure helpers wrapped to update state and storage together.
+  const persistOverlay=useCallback((next)=>{setFundOverlay(next);saveUserFunds(next)},[])
+  const handleAddFund=useCallback((fund)=>persistOverlay(addFund(fundOverlay,fund)),[fundOverlay,persistOverlay])
+  const handleArchiveFund=useCallback((id)=>persistOverlay(archiveFund(fundOverlay,id)),[fundOverlay,persistOverlay])
+  const handleRestoreFund=useCallback((id)=>persistOverlay(restoreFund(fundOverlay,id)),[fundOverlay,persistOverlay])
   // AR-1: Migration banner — shown after sign-in if localStorage has existing data
   const[migrating,setMigrating]=useState(false)
   const[migrateDone,setMigrateDone]=useState(false)
@@ -761,7 +764,12 @@ Using Google Search, find the CURRENT trailing P/E ratio (TTM — trailing twelv
     }catch{setSt(p=>({...p,[fund.id]:'error'}))}
   },[])
 
-  useEffect(()=>{FUNDS.forEach((f,i)=>setTimeout(()=>loadFund(f),i*300))},[loadFund])
+  // SW-15: load NAV for every effective fund. Re-runs when the fund list changes
+  // (e.g. a fund is added) but skips funds already loaded/loading so we don't refetch.
+  useEffect(()=>{
+    FUNDS.filter(f=>!st[f.id]).forEach((f,i)=>setTimeout(()=>loadFund(f),i*300))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[loadFund,FUNDS])
 
   const metrics=useMemo(()=>{
     const m={}
@@ -1061,6 +1069,10 @@ Using Google Search, find the CURRENT trailing P/E ratio (TTM — trailing twelv
         <GoalDashboard
           goalsConfig={goalsConfig}
           funds={FUNDS}
+          allFunds={allFunds}
+          onAddFund={handleAddFund}
+          onArchiveFund={handleArchiveFund}
+          onRestoreFund={handleRestoreFund}
           onUpdateGoalsConfig={setGoalsConfig}
           onHealthUpdate={setHealthMap}
           abandonedIds={abandonedIds}

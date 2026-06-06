@@ -16,6 +16,7 @@ import {
   formatLakh,
   formatTimeLeft,
   formatINR,
+  blendedReturn,
   GOAL_TYPES,
   GOAL_STATUSES,
 } from '../goalUtils';
@@ -48,6 +49,35 @@ export default function GoalCard({ goal, onEdit, onUpdateCorpus, onStatusChange,
   const hc = HEALTH[health.status];
   const typeDef = GOAL_TYPES[goal.goalType];
   const bs = '0.5px solid var(--border)';
+
+  // SW-16: the goal's effective rate is the contribution-weighted BLENDED return across all
+  // funding sources (MF SIPs + RD/FD), not a single CAGR. Display that instead.
+  const blended = blendedReturn(goal);
+
+  // SW-16: build a small per-source funding breakdown (MF / RD / FD) for display.
+  // MF rows show monthly SIP + rate; RD shows monthly + rate; FD shows principal + rate.
+  const fundingSources = [];
+  if (goal.funds) {
+    for (const [fid, f] of Object.entries(goal.funds)) {
+      if (!(f.monthlySIP > 0)) continue;
+      fundingSources.push({
+        key: 'mf-' + fid, type: 'MF', label: fid,
+        amountLabel: formatINR(f.monthlySIP) + '/mo',
+        rate: f.rate ?? goal.assumedCAGR,
+      });
+    }
+  }
+  if (Array.isArray(goal.instruments)) {
+    for (const inst of goal.instruments) {
+      fundingSources.push({
+        key: 'inst-' + (inst.id || inst.label), type: inst.type, label: inst.label,
+        amountLabel: inst.type === 'FD'
+          ? formatINR(inst.principal) + ' lump'
+          : formatINR(inst.monthly) + '/mo',
+        rate: inst.rate,
+      });
+    }
+  }
 
   // SW-9: archived goals render dimmed with an "Archived" badge and Restore button.
   // Health metrics still computed so user can see what they're restoring.
@@ -129,7 +159,8 @@ export default function GoalCard({ goal, onEdit, onUpdateCorpus, onStatusChange,
         {[
           ['Invested', formatLakh(goal.currentCorpus || 0)],
           ['Monthly SIP', health.totalMonthlySIP > 0 ? formatINR(health.totalMonthlySIP) : '—'],
-          ['CAGR', goal.assumedCAGR + '%'],
+          // SW-16: "Blended" return replaces the single assumed CAGR.
+          ['Blended', blended + '%'],
         ].map(([label, val]) => (
           <div key={label} style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 9, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</div>
@@ -137,6 +168,35 @@ export default function GoalCard({ goal, onEdit, onUpdateCorpus, onStatusChange,
           </div>
         ))}
       </div>
+
+      {/* SW-16: Funding sources breakdown — MF / RD / FD, each with contribution + rate. */}
+      {fundingSources.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{
+            fontSize: 9, color: 'var(--text-secondary)', textTransform: 'uppercase',
+            letterSpacing: '.04em', marginBottom: 4,
+          }}>
+            Funding Sources
+          </div>
+          {fundingSources.map(s => (
+            <div key={s.key} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              fontSize: 11, padding: '3px 0', color: 'var(--text-primary)',
+            }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                <span style={{
+                  fontSize: 8, fontWeight: 600, padding: '1px 5px', borderRadius: 99,
+                  background: 'var(--bg-secondary)', color: 'var(--text-secondary)', flexShrink: 0,
+                }}>{s.type}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+              </span>
+              <span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', marginLeft: 8 }}>
+                {s.amountLabel} · {s.rate}%
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Required CAGR — only amber/red (DEC-014) */}
       {health.status !== 'green' && health.reqCAGR !== null && (

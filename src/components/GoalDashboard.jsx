@@ -102,6 +102,15 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
 
   const corpus = corpusData[goalId] || {};
 
+  // SW-16: legacy goalsConfig has no place for per-fund rates or RD/FD instruments,
+  // so we stash those alongside corpus (corpus.fundRates, corpus.instruments) and merge
+  // them back here. fundRates is { fid: rate } — applied onto the legacy-derived funds.
+  if (corpus.fundRates) {
+    for (const fid of Object.keys(funds)) {
+      if (corpus.fundRates[fid] != null) funds[fid].rate = corpus.fundRates[fid];
+    }
+  }
+
   return {
     id: goalId,
     label: legacyGoal.label || 'Goal',
@@ -115,6 +124,7 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
     targetLakh: legacyGoal.targetLakh || 0,
     assumedCAGR: corpus.assumedCAGR || typeDef?.defaultCAGR || 12,
     funds,
+    instruments: Array.isArray(corpus.instruments) ? corpus.instruments : [],
     // SW-14: legacy goals persist their status in corpus storage (corpus.status).
     // Defaults to ACTIVE on first load. This lets Pause/Resume/Achieved work on
     // existing goals, not just newly-created v4 goals.
@@ -139,6 +149,10 @@ function inferType(goalId, label) {
 // ─── Component ─────────────────────────────────────────────────────
 export default function GoalDashboard({
   goalsConfig, funds, onUpdateGoalsConfig, onHealthUpdate,
+  // SW-15: fund universe management. `funds` is the effective (non-archived) list used
+  // for the goal fund-picker. `allFunds` includes archived ones for the manage-funds UI.
+  // The add/archive/restore callbacks are owned by App.jsx (persist to localStorage).
+  allFunds, onAddFund, onArchiveFund, onRestoreFund,
   // SW-9 (goal abandon/archive): list of archived goal IDs + callbacks. Owned by App.jsx
   // so the rest of the app filters consistently. GoalDashboard renders the archive view
   // separately so users can find and restore archived goals.
@@ -305,11 +319,22 @@ export default function GoalDashboard({
       target: Number(g.targetLakh || 0),
       years:  Number(g.totalYears ?? g.yearsLeft ?? 0),
       sip:    sumSip(g.funds),
+      // SW-16: RD/FD instrument changes are material (they change the projection).
+      instruments: (g.instruments || []).map(i => `${i.type}:${i.monthly || i.principal || 0}@${i.rate || 0}`).sort(),
     }) : null;
     if (!prev) {
       logDecision(ACTION_TYPES.GOAL_CREATE, { notes: `Goal "${goal.label}" created` });
     } else if (materialSig(goal) !== materialSig(prev)) {
       logDecision(ACTION_TYPES.GOAL_UPDATE, { notes: `Goal "${goal.label}" updated` });
+    }
+
+    // SW-16: extract per-fund rates ({fid: rate}) so they can be persisted next to corpus
+    // for legacy goals (whose goalsConfig format can't hold them).
+    const fundRates = {};
+    if (goal.funds) {
+      for (const [fid, fdata] of Object.entries(goal.funds)) {
+        if (fdata.rate != null) fundRates[fid] = fdata.rate;
+      }
     }
 
     if (goal._isLegacy) {
@@ -321,13 +346,16 @@ export default function GoalDashboard({
           amount: goal.currentCorpus || 0,
           updatedAt: goal.corpusUpdatedAt || new Date().toISOString().slice(0, 10),
           assumedCAGR: goal.assumedCAGR,
+          // SW-16: stash composite-funding data the legacy config can't hold.
+          fundRates,
+          instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
         },
       };
       setCorpusData(updated);
       saveCorpusData(updated);
 
       // Convert v4 funds back to legacy format and sync everything
-      // v4: { fid: { monthlySIP, sipDate, alertEnabled } }
+      // v4: { fid: { monthlySIP, sipDate, alertEnabled, rate? } }
       // legacy: funds: { fid: amount }, sipDates: { fid: date }
       const legacyFunds = {};
       const legacySipDates = {};
@@ -379,7 +407,9 @@ export default function GoalDashboard({
         }
       }
 
-      // Store corpus + CAGR in separate storage (same as legacy goals)
+      // Store corpus + CAGR in separate storage (same as legacy goals).
+      // SW-16: also stash per-fund rates + instruments so they survive even if the goal
+      // ever gets re-read through the legacy path (and ride the cloud config blob).
       const updatedCorpus = {
         ...corpusData,
         [goal.id]: {
@@ -387,6 +417,8 @@ export default function GoalDashboard({
           amount: goal.currentCorpus || 0,
           updatedAt: goal.corpusUpdatedAt || new Date().toISOString().slice(0, 10),
           assumedCAGR: goal.assumedCAGR,
+          fundRates,
+          instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
         },
       };
       setCorpusData(updatedCorpus);
@@ -588,6 +620,10 @@ export default function GoalDashboard({
         onSave={handleFormSave}
         existingGoal={editingGoal}
         trackedFunds={trackedFunds}
+        allFunds={allFunds}
+        onAddFund={onAddFund}
+        onArchiveFund={onArchiveFund}
+        onRestoreFund={onRestoreFund}
       />
 
       {/* Corpus Update Modal */}

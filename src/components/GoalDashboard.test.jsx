@@ -17,6 +17,7 @@ import GoalDashboard from './GoalDashboard'
 // window.confirm isn't implemented in jsdom — auto-accept every confirm dialog.
 beforeEach(() => {
   vi.spyOn(window, 'confirm').mockReturnValue(true)
+  localStorage.clear()
 })
 
 // Harness mimics App.jsx: it OWNS abandonedIds and feeds archive/restore back in,
@@ -81,5 +82,39 @@ describe('GoalDashboard — SW-14 status lifecycle on legacy goals', () => {
     // still 'achieved', so neither Pause nor Achieved rendered. Both must be back now.
     expect(screen.getByRole('button', { name: /Pause/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Achieved/i })).toBeInTheDocument()
+  })
+})
+
+// SW-16: end-to-end persistence — add an RD instrument via the real form, save, then
+// REMOUNT GoalDashboard (simulating a reload) and confirm the instrument round-tripped
+// through localStorage (the goal's projection still reflects the RD).
+describe('GoalDashboard — SW-16 RD instrument persists across reload', () => {
+  function setNumber(el, value) { fireEvent.change(el, { target: { value: String(value) } }) }
+
+  it('an RD added in the form survives a remount (saved to localStorage)', () => {
+    // First mount: open form, create a NEW goal with an RD funding source.
+    const { unmount } = render(<Harness initialConfig={{}} />)
+    fireEvent.click(screen.getByRole('button', { name: /New Goal/i }))
+
+    setNumber(screen.getByPlaceholderText(/for ₹1 Cr/i), 50)
+    setNumber(screen.getByLabelText(/Horizon/i), 5)
+    fireEvent.click(screen.getByRole('button', { name: /\+ RD/i }))
+    setNumber(screen.getByLabelText(/Monthly contribution/i), 10000)
+    setNumber(screen.getByLabelText(/^Rate$/i), 7)
+    fireEvent.change(screen.getByLabelText(/Start date/i), { target: { value: '2026-01-01' } })
+    fireEvent.change(screen.getByLabelText(/Maturity date/i), { target: { value: '2031-01-01' } })
+    fireEvent.click(screen.getByRole('button', { name: /Create Goal/i }))
+
+    // The new goal's card shows an RD funding source.
+    expect(screen.getByText(/Funding Sources/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/RD/).length).toBeGreaterThan(0)
+
+    // Remount from the SAME localStorage (extra-goals + corpus stores persist).
+    unmount()
+    render(<Harness initialConfig={{}} />)
+
+    // The goal (and its RD source) is still there after the "reload".
+    expect(screen.getByText(/Funding Sources/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/RD/).length).toBeGreaterThan(0)
   })
 })
