@@ -23,6 +23,7 @@ import {
   getHorizonBucket,
   computeSuggestedCAGR,
   projectGoalComposite,
+  existingCorpusRate,
   instrumentMaturityAmount,
   instrumentValueAtTarget,
   blendedReturn,
@@ -391,5 +392,46 @@ describe('SW-16b — MF SIP contribution window (start / optional end date)', ()
     // Its accrued value is assumed to live in currentCorpus, so future contribution is 0.
     const proj = projectGoalComposite(goalWith({ endDate: isoIn(-1) }), 10)
     expect(proj).toBe(0)
+  })
+})
+
+describe('existing corpus grows at the goal\'s real mix, not the equity default', () => {
+  it('existingCorpusRate uses the equity (assumed) rate when the goal HAS equity SIPs', () => {
+    const eq = { goalType: 'retirement', assumedCAGR: 12, currentCorpus: 1000000,
+      funds: { a: { monthlySIP: 10000, rate: 12 } } }
+    expect(existingCorpusRate(eq, 10)).toBe(12)
+  })
+
+  it('existingCorpusRate uses the DEBT rate when the goal has only RD/FD (no equity SIPs)', () => {
+    const rd = { goalType: 'retirement', assumedCAGR: 12, currentCorpus: 1000000, funds: {},
+      instruments: [{ type: 'RD', monthly: 10000, rate: 7, startDate: isoIn(0), maturityDate: isoIn(10) }] }
+    // One debt source @7% → corpus rate is 7%, NOT the 12% assumed equity default.
+    expectClose(existingCorpusRate(rd, 10), 7, 0.001)
+  })
+
+  it('blendedReturn for an all-RD goal with a big corpus is ~the debt rate, not the equity default (the reported bug)', () => {
+    // Mirrors the screenshot: ₹99L corpus + RDs at 6.5–7%. Used to show ~12%; must show ~6.6%.
+    const goal = {
+      goalType: 'retirement', assumedCAGR: 12, currentCorpus: 9900000, targetDate: isoIn(24), funds: {},
+      instruments: [
+        { type: 'RD', monthly: 45000, rate: 6.5, startDate: isoIn(0), maturityDate: isoIn(24) },
+        { type: 'RD', monthly: 15000, rate: 7,   startDate: isoIn(0), maturityDate: isoIn(24) },
+      ],
+    }
+    const b = blendedReturn(goal)
+    expect(b).toBeGreaterThan(6)
+    expect(b).toBeLessThan(8)   // ← fails on the old code (corpus@12% dragged it to ~12%)
+  })
+
+  it('projectGoalComposite does NOT grow an all-debt corpus at the equity rate', () => {
+    const goal = {
+      goalType: 'retirement', assumedCAGR: 12, currentCorpus: 9900000, targetDate: isoIn(10), funds: {},
+      instruments: [{ type: 'RD', monthly: 45000, rate: 6.5, startDate: isoIn(0), maturityDate: isoIn(10) }],
+    }
+    const projected = projectGoalComposite(goal, 10)
+    const expected = futureValueLumpSum(9900000, 6.5, 10) + futureValueSIP(45000, 6.5, 10)
+    expectClose(projected, expected, 2)
+    // Sanity: strictly less than if the corpus had (wrongly) grown at the 12% equity default.
+    expect(projected).toBeLessThan(futureValueLumpSum(9900000, 12, 10) + futureValueSIP(45000, 6.5, 10))
   })
 })
