@@ -220,7 +220,7 @@ Signal verdicts now check goal horizon even for neutral signals. Previously, a 2
 
 | Styling | Inline CSS with CSS variables | No Tailwind — avoids CDN dependency |
 
-| State / Storage | React state + localStorage | Config in artha\_config\_v1, corpus in artha\_goal\_corpus |
+| State / Storage | React state + localStorage + Supabase Postgres | localStorage is write-through cache. Supabase is primary when configured. Graceful fallback to localStorage when env vars absent. |
 
 | NAV Data | mfapi.in (free, public REST API) | No auth required. 1 NAV per fund per day. |
 
@@ -230,7 +230,9 @@ Signal verdicts now check goal horizon even for neutral signals. Previously, a 2
 
 | Scheduling | GitHub Actions (cron) | Free. 2,000 minutes/month on free tier. |
 
-| Hosting | \*\*GitHub Pages (free, unlimited)\*\* | NEW in v5: Migrating from Netlify. Zero build limits. |
+| Database | \*\*Supabase Postgres (free tier)\*\* | NEW in Sprint 3 (AR-1). Tables: goals, config, signal\_history, decisions. RLS enforced. REST API used directly (no SDK). |
+| Auth | \*\*Supabase Auth (magic link)\*\* | NEW in Sprint 3 (AR-2). Email OTP flow. Session in memory only. "Continue without account" for local mode. |
+| Hosting | \*\*GitHub Pages (free, unlimited)\*\* | NEW in v5: Migrated from Netlify. Zero build limits. |
 
 | Version Control | GitHub (mpaditya/signal-watch) | Source of truth |
 

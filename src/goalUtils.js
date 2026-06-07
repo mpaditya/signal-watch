@@ -92,11 +92,15 @@ export const GOAL_TYPES = {
 };
 
 // ─── Goal Statuses ─────────────────────────────────────────────────
+// SW-14: Added ACHIEVED status. Mirrors the Supabase goals table enum:
+// active | paused | abandoned | achieved.
+// COMPLETED is kept as an alias for backwards compatibility with existing stored goals.
 export const GOAL_STATUSES = {
-  ACTIVE: 'active',
-  PAUSED: 'paused',
-  COMPLETED: 'completed',
+  ACTIVE:    'active',
+  PAUSED:    'paused',
+  COMPLETED: 'completed',  // legacy alias — treat same as ACHIEVED in UI
   ABANDONED: 'abandoned',
+  ACHIEVED:  'achieved',   // SW-14: user explicitly marks goal as achieved
 };
 
 // ─── Health Thresholds (Brief §4.3) ────────────────────────────────
@@ -407,9 +411,21 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
   const isFixed = GOAL_TYPES[goalType]?.isFixed;
   const priority = leverPriorityForGoalType(goalType);
 
+  // SW-16: the gap is measured against the COMPOSITE projection (`projected`), which already
+  // includes RD/FD instruments. The levers below close THIS gap with an EXTRA MF SIP / lump
+  // sum at the goal's equity rate. Previously they recomputed from projectCorpus(corpus, SIP)
+  // and ignored instruments — so an FD/RD-funded goal looked like it had saved ₹0.
+  const gap = targetINR - projected;
+
   const leverCalculators = {
     increaseSIP: () => {
-      const extra = additionalSIPNeeded(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft, targetINR);
+      if (gap <= 0 || yearsLeft <= 0) return null;
+      // Extra monthly SIP whose future value (annuity-due, proper compounding) closes the gap.
+      const r = annualToMonthlyRate(assumedCAGR);
+      const n = Math.round(yearsLeft * 12);
+      if (n <= 0) return null;
+      const sipMult = r === 0 ? n : ((Math.pow(1 + r, n) - 1) / r) * (1 + r);
+      const extra = Math.ceil(gap / sipMult);
       if (extra <= 0) return null;
       return {
         key: 'increaseSIP',
@@ -422,6 +438,9 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
     extendTimeline: () => {
       // Don't suggest for emergency fund or truly fixed-deadline goals with short horizon
       if (goalType === 'emergency') return null;
+      // SW-16: extending time only helps if there's an ongoing MF contribution to keep growing.
+      // A goal funded purely by RD/FD (no MF SIP/corpus) can't be helped by waiting longer.
+      if (currentCorpus === 0 && totalMonthlySIP === 0) return null;
       const extraMonths = extraMonthsNeeded(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft, targetINR);
       if (extraMonths === null || extraMonths <= 0) return null;
       const extraYrs = Math.floor(extraMonths / 12);
@@ -443,8 +462,8 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
     },
     reduceTarget: () => {
       if (isFixed === true) return null; // never for education, retirement, emergency
-      const achievable = achievableCorpus(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft);
-      const achievableLakh = Math.round(achievable / 100000);
+      // What you'll actually reach = the composite projection (incl. RD/FD instruments).
+      const achievableLakh = Math.round(projected / 100000);
       const targetLakh = Math.round(targetINR / 100000);
       if (achievableLakh >= targetLakh) return null;
       const contextMap = {
@@ -462,7 +481,9 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
       };
     },
     lumpSum: () => {
-      const needed = lumpSumNeeded(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft, targetINR);
+      // A one-time investment today, grown at the equity rate, that closes the composite gap.
+      if (gap <= 0) return null;
+      const needed = yearsLeft <= 0 ? Math.ceil(gap) : Math.ceil(gap / Math.pow(1 + assumedCAGR / 100, yearsLeft));
       if (needed <= 0) return null;
       return {
         key: 'lumpSum',
@@ -473,6 +494,8 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
       };
     },
     higherReturn: () => {
+      // SW-16: raising the equity return only matters if there's MF money to grow.
+      if (currentCorpus === 0 && totalMonthlySIP === 0) return null;
       const neededRate = higherReturnProjection(currentCorpus, totalMonthlySIP, yearsLeft, targetINR);
       if (neededRate === null) return null;
       if (neededRate <= assumedCAGR) return null; // already assuming enough
@@ -507,6 +530,90 @@ export function computeOffTrackLevers(goal, totalMonthlySIP, yearsLeft, targetIN
  *                               (from goal.funds)
  * @returns {object} Full health snapshot
  */
+// ─── SW-16: Composite (multi-instrument) goal projection ───────────
+// A goal can be funded by a MIX of instruments, each with its OWN return:
+//   - MF SIP   — goal.funds[fid] = { monthlySIP, sipDate, rate? }  (rate defaults to goal CAGR)
+//   - RD       — goal.instruments[] = { type:'RD', monthly, rate, startDate, maturityDate, maturityAmount? }
+//   - FD       — goal.instruments[] = { type:'FD', principal, rate, startDate, maturityDate, maturityAmount? }
+// Legacy goals (funds without `rate`, no instruments) project IDENTICALLY to the old
+// single-CAGR model, because Σ FV(sip_i @ same rate) == FV(Σ sip_i @ rate).
+//
+// Per-instrument projection is financially correct for composite goals: a 1-year car goal
+// backed by an RD/FD is projected at its fixed rate, not an equity CAGR — so derisking
+// warnings and "am I in the right instruments?" context are accurate.
+
+// Fractional years between two ISO dates (can be negative if `to` is before `from`).
+function yearsBetween(fromStr, toStr) {
+  if (!fromStr || !toStr) return 0;
+  const from = new Date(fromStr), to = new Date(toStr);
+  if (isNaN(from) || isNaN(to)) return 0;
+  return (to - from) / (365.25 * 24 * 60 * 60 * 1000);
+}
+
+// Maturity amount of an RD/FD: explicit override if the user entered the contracted figure,
+// otherwise computed from contribution + rate over its full term (start → maturity).
+export function instrumentMaturityAmount(inst) {
+  if (inst.maturityAmount != null && inst.maturityAmount !== '') return Number(inst.maturityAmount);
+  const term = yearsBetween(inst.startDate, inst.maturityDate);
+  if (term <= 0) return inst.type === 'FD' ? Number(inst.principal || 0) : 0;
+  if (inst.type === 'FD') return futureValueLumpSum(Number(inst.principal || 0), Number(inst.rate || 0), term);
+  if (inst.type === 'RD') return futureValueSIP(Number(inst.monthly || 0), Number(inst.rate || 0), term);
+  return 0;
+}
+
+// Value an RD/FD instrument contributes to the goal AT the goal's target date.
+// - Matures on/before target  → its maturity amount, held flat to target (conservative:
+//   we don't assume reinvestment of a matured deposit).
+// - Matures after target       → its accrued value at the target date (project to yearsLeft).
+export function instrumentValueAtTarget(inst, yearsLeft, targetDateStr) {
+  const now = new Date().toISOString().slice(0, 10);
+  const maturesAfterTarget = yearsBetween(now, inst.maturityDate) > yearsLeft;
+  if (!maturesAfterTarget) return instrumentMaturityAmount(inst);
+  // Still running at the target date — accrue only up to the target horizon.
+  if (inst.type === 'FD') return futureValueLumpSum(Number(inst.principal || 0), Number(inst.rate || 0), yearsLeft);
+  if (inst.type === 'RD') return futureValueSIP(Number(inst.monthly || 0), Number(inst.rate || 0), yearsLeft);
+  return 0;
+}
+
+// Project the full goal corpus at the target date by summing every funding source at its
+// own return. mfRate defaults to the goal's assumed CAGR; each MF fund may override `rate`.
+export function projectGoalComposite(goal, yearsLeft) {
+  const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
+  const currentCorpus = goal.currentCorpus || 0;
+
+  // Existing MF corpus grows at the (blended) equity rate.
+  let total = futureValueLumpSum(currentCorpus, mfRate, yearsLeft);
+
+  // Each MF SIP grows at its own rate (or the goal rate if unset).
+  if (goal.funds) {
+    for (const f of Object.values(goal.funds)) {
+      total += futureValueSIP(Number(f.monthlySIP || 0), Number(f.rate ?? mfRate), yearsLeft);
+    }
+  }
+
+  // RD/FD instruments contribute their value at the target date.
+  if (Array.isArray(goal.instruments)) {
+    for (const inst of goal.instruments) {
+      total += instrumentValueAtTarget(inst, yearsLeft, goal.targetDate);
+    }
+  }
+  return total;
+}
+
+// Contribution-weighted blended return, for DISPLAY only (the goal's effective rate).
+export function blendedReturn(goal) {
+  const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
+  let weighted = 0, weight = 0;
+  const add = (amount, rate) => { weighted += amount * rate; weight += amount; };
+  add(goal.currentCorpus || 0, mfRate);
+  if (goal.funds) for (const f of Object.values(goal.funds)) add(Number(f.monthlySIP || 0), Number(f.rate ?? mfRate));
+  if (Array.isArray(goal.instruments)) for (const inst of goal.instruments) {
+    const amt = inst.type === 'FD' ? Number(inst.principal || 0) : Number(inst.monthly || 0);
+    add(amt, Number(inst.rate || 0));
+  }
+  return weight > 0 ? Math.round((weighted / weight) * 10) / 10 : mfRate;
+}
+
 export function computeGoalHealth(goal) {
   const yearsLeft = computeYearsLeft(goal.targetDate);
   const totalMonthlySIP = getTotalMonthlySIP(goal);
@@ -514,7 +621,9 @@ export function computeGoalHealth(goal) {
   const currentCorpus = goal.currentCorpus || 0;
   const assumedCAGR = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
 
-  const projected = projectCorpus(currentCorpus, totalMonthlySIP, assumedCAGR, yearsLeft);
+  // SW-16: composite projection (per-instrument returns). For legacy all-MF goals with no
+  // per-fund rate and no instruments, this equals the old projectCorpus(...) exactly.
+  const projected = projectGoalComposite(goal, yearsLeft);
   const onTrackPct = onTrackPercent(projected, targetINR);
   const status = healthStatus(onTrackPct);
 
@@ -600,6 +709,11 @@ export function createGoal({
   currentCorpus = 0,
   assumedCAGR,
   funds = {},
+  // SW-16: a goal can be funded by a MIX of instruments. `instruments` is an array of
+  // RD/FD deposits (each with its own fixed `rate`), and each MF entry in `funds` may
+  // carry an optional per-fund `rate`. These are persisted verbatim — the projection
+  // engine (projectGoalComposite) reads them. Defaults keep legacy single-CAGR goals identical.
+  instruments = [],
 }) {
   const typeDef = GOAL_TYPES[goalType];
   if (!typeDef) throw new Error(`Unknown goal type: ${goalType}`);
@@ -620,7 +734,9 @@ export function createGoal({
     corpusUpdatedAt: currentCorpus > 0 ? now : null,
     targetLakh: targetLakh || 0,
     assumedCAGR: assumedCAGR ?? typeDef.defaultCAGR,
+    // Preserve per-fund rate: funds is { fid: { monthlySIP, sipDate, rate? } }.
     funds: funds || {},
+    instruments: Array.isArray(instruments) ? instruments : [],
     status: GOAL_STATUSES.ACTIVE,
     createdAt: new Date().toISOString(),
   };
@@ -631,6 +747,9 @@ export function createGoal({
  * Automatically updates corpusUpdatedAt if currentCorpus changes.
  */
 export function updateGoal(existingGoal, updates) {
+  // Shallow merge: any field present in `updates` overwrites the existing goal.
+  // SW-16: this naturally carries through `funds` (incl. per-fund `rate`) and the
+  // `instruments` array when the form passes them — no special handling needed.
   const updated = { ...existingGoal, ...updates };
 
   // If corpus changed, update the timestamp

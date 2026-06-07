@@ -30,6 +30,13 @@ import {
   createGoal,
   updateGoal,
 } from '../goalUtils';
+// AR-4: log goal create/update decisions to the audit trail
+import { logDecision, ACTION_TYPES } from '../decisions';
+// AR-1: corpus cloud sync (write on update, read-back on login)
+import {
+  isSupabaseConfigured, isAuthenticated, fetchGoals as cloudFetchGoals,
+  upsertGoal as cloudUpsertGoal,
+} from '../supabase';
 
 // ─── Bridge: convert existing goalsConfig to v4 goal objects ───────
 // Existing format:
@@ -95,6 +102,15 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
 
   const corpus = corpusData[goalId] || {};
 
+  // SW-16: legacy goalsConfig has no place for per-fund rates or RD/FD instruments,
+  // so we stash those alongside corpus (corpus.fundRates, corpus.instruments) and merge
+  // them back here. fundRates is { fid: rate } — applied onto the legacy-derived funds.
+  if (corpus.fundRates) {
+    for (const fid of Object.keys(funds)) {
+      if (corpus.fundRates[fid] != null) funds[fid].rate = corpus.fundRates[fid];
+    }
+  }
+
   return {
     id: goalId,
     label: legacyGoal.label || 'Goal',
@@ -108,7 +124,11 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
     targetLakh: legacyGoal.targetLakh || 0,
     assumedCAGR: corpus.assumedCAGR || typeDef?.defaultCAGR || 12,
     funds,
-    status: GOAL_STATUSES.ACTIVE,
+    instruments: Array.isArray(corpus.instruments) ? corpus.instruments : [],
+    // SW-14: legacy goals persist their status in corpus storage (corpus.status).
+    // Defaults to ACTIVE on first load. This lets Pause/Resume/Achieved work on
+    // existing goals, not just newly-created v4 goals.
+    status: corpus.status || GOAL_STATUSES.ACTIVE,
     createdAt: corpus.createdAt || now.toISOString(),
     _isLegacy: true,
   };
@@ -129,6 +149,10 @@ function inferType(goalId, label) {
 // ─── Component ─────────────────────────────────────────────────────
 export default function GoalDashboard({
   goalsConfig, funds, onUpdateGoalsConfig, onHealthUpdate,
+  // SW-15: fund universe management. `funds` is the effective (non-archived) list used
+  // for the goal fund-picker. `allFunds` includes archived ones for the manage-funds UI.
+  // The add/archive/restore callbacks are owned by App.jsx (persist to localStorage).
+  allFunds, onAddFund, onArchiveFund, onRestoreFund,
   // SW-9 (goal abandon/archive): list of archived goal IDs + callbacks. Owned by App.jsx
   // so the rest of the app filters consistently. GoalDashboard renders the archive view
   // separately so users can find and restore archived goals.
@@ -143,6 +167,30 @@ export default function GoalDashboard({
   // SW-9: archive view is collapsed by default — it's a recovery tool, not a primary view.
   const [showArchive, setShowArchive] = useState(false);
 
+  // AR-1 corpus read-back: on login, hydrate corpus amounts from the cloud goals table
+  // (corpus column). This is how a browser-wiped or second device recovers real invested
+  // values. Only overwrite a local entry when the cloud has a positive value, so we never
+  // clobber a locally-entered amount that hasn't synced yet with a 0.
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !isAuthenticated()) return;
+    cloudFetchGoals().then(rows => {
+      if (!Array.isArray(rows) || rows.length === 0) return;
+      setCorpusData(prev => {
+        const next = { ...prev };
+        let changed = false;
+        for (const row of rows) {
+          const amt = Number(row.corpus || 0);
+          if (amt > 0 && (next[row.id]?.amount ?? 0) !== amt) {
+            next[row.id] = { ...next[row.id], amount: amt, updatedAt: (row.updated_at || '').slice(0, 10) };
+            changed = true;
+          }
+        }
+        if (changed) saveCorpusData(next);
+        return changed ? next : prev;
+      });
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Build unified goals array: legacy goals from goalsConfig + extra goals NOT already in goalsConfig
   // (New goals get injected into goalsConfig on save, so we skip them from extraGoals to avoid dupes)
   // SW-9: split active vs archived using the abandonedIds list owned by App.jsx.
@@ -151,12 +199,32 @@ export default function GoalDashboard({
     const legacy = Object.entries(goalsConfig || {}).map(([gid, g]) =>
       legacyToV4(gid, g, corpusData)
     );
+    // Merge corpusData into extra (v4) goals the same way legacyToV4 does for legacy goals.
+    // BUG FIX: without this, the "Update Corpus" modal (which writes to corpusData) had no
+    // effect on a created goal's card — "Invested" stayed at the creation-time value (₹0)
+    // and the progress bar never moved, because the card read currentCorpus straight off the
+    // stored extraGoals object instead of the latest corpusData.
     const extras = extraGoals
-      .filter(g => g.status === GOAL_STATUSES.ACTIVE && !configKeys.has(g.id));
+      .filter(g => g.status === GOAL_STATUSES.ACTIVE && !configKeys.has(g.id))
+      .map(g => ({
+        ...g,
+        currentCorpus: corpusData[g.id]?.amount ?? g.currentCorpus ?? 0,
+        corpusUpdatedAt: corpusData[g.id]?.updatedAt ?? g.corpusUpdatedAt ?? null,
+        assumedCAGR: corpusData[g.id]?.assumedCAGR ?? g.assumedCAGR,
+      }));
     const all = [...legacy, ...extras];
     const abandonedSet = new Set(abandonedIds);
     return {
-      activeGoals:   all.filter(g => !abandonedSet.has(g.id)),
+      // SW-14 self-heal: the abandoned-list (owned by App.jsx) is the source of truth for
+      // "is this goal archived". So any goal NOT in that list is active by definition — even
+      // if a stale 'achieved'/'abandoned' status lingers in storage from a pre-fix restore.
+      // Normalize it to ACTIVE so the Pause/Achieved buttons render correctly. (A genuine
+      // PAUSED status is preserved — only the two archived states are coerced.)
+      activeGoals: all
+        .filter(g => !abandonedSet.has(g.id))
+        .map(g => (g.status === GOAL_STATUSES.ACHIEVED || g.status === GOAL_STATUSES.ABANDONED)
+          ? { ...g, status: GOAL_STATUSES.ACTIVE }
+          : g),
       archivedGoals: all.filter(g =>  abandonedSet.has(g.id)),
     };
   }, [goalsConfig, corpusData, extraGoals, abandonedIds]);
@@ -196,7 +264,9 @@ export default function GoalDashboard({
 
   // ── Corpus Update ───────────────────────────────────────────────
   const openCorpusUpdate = useCallback((goalId) => {
-    setCorpusInput(corpusData[goalId]?.amount || '');
+    // Prefill in ₹ Lakhs (stored value is rupees).
+    const amt = corpusData[goalId]?.amount;
+    setCorpusInput(amt ? String(amt / 100000) : '');
     setCorpusGoalId(goalId);
   }, [corpusData]);
 
@@ -206,15 +276,26 @@ export default function GoalDashboard({
       ...corpusData,
       [corpusGoalId]: {
         ...corpusData[corpusGoalId],
-        amount: parseFloat(corpusInput) || 0,
+        // Input is entered in ₹ LAKHS (consistent with the target field). Store rupees.
+        amount: (parseFloat(corpusInput) || 0) * 100000,
         updatedAt: new Date().toISOString().slice(0, 10),
       },
     };
     setCorpusData(updated);
     saveCorpusData(updated);
+
+    // AR-1: write the new corpus value through to the cloud goals table (corpus column),
+    // so it's backed up and recoverable. upsertGoal no-ops when offline/not authenticated.
+    // cache:false: don't add this goal to the artha_goals_v4 extra-goals cache.
+    const goalCfg = (goalsConfig || {})[corpusGoalId] || extraGoals.find(g => g.id === corpusGoalId) || {};
+    cloudUpsertGoal(
+      { id: corpusGoalId, ...goalCfg, currentCorpus: parseFloat(corpusInput) || 0 },
+      { cache: false }
+    );
+
     setCorpusGoalId(null);
     setCorpusInput('');
-  }, [corpusGoalId, corpusInput, corpusData]);
+  }, [corpusGoalId, corpusInput, corpusData, goalsConfig, extraGoals]);
 
   // ── Edit ────────────────────────────────────────────────────────
   const handleEdit = useCallback((goal) => {
@@ -224,6 +305,38 @@ export default function GoalDashboard({
 
   // ── Save from GoalForm ──────────────────────────────────────────
   const handleFormSave = useCallback((goal) => {
+    // AR-4: log the decision. A brand-new goal → GOAL_CREATE. An edit → GOAL_UPDATE ONLY
+    // if a MATERIAL field changed (target, horizon, or total SIP). A cosmetic-only edit
+    // (just renaming the goal or changing its emoji) is intentionally not logged — it's
+    // not an investment decision and would only clutter the audit trail.
+    const prev = goal._isLegacy
+      ? (goalsConfig || {})[goal.id]
+      : extraGoals.find(g => g.id === goal.id);
+    const sumSip = (funds) => funds
+      ? Object.values(funds).reduce((s, v) => s + (typeof v === 'number' ? v : Number(v?.monthlySIP || 0)), 0)
+      : 0;
+    const materialSig = (g) => g ? JSON.stringify({
+      target: Number(g.targetLakh || 0),
+      years:  Number(g.totalYears ?? g.yearsLeft ?? 0),
+      sip:    sumSip(g.funds),
+      // SW-16: RD/FD instrument changes are material (they change the projection).
+      instruments: (g.instruments || []).map(i => `${i.type}:${i.monthly || i.principal || 0}@${i.rate || 0}`).sort(),
+    }) : null;
+    if (!prev) {
+      logDecision(ACTION_TYPES.GOAL_CREATE, { notes: `Goal "${goal.label}" created` });
+    } else if (materialSig(goal) !== materialSig(prev)) {
+      logDecision(ACTION_TYPES.GOAL_UPDATE, { notes: `Goal "${goal.label}" updated` });
+    }
+
+    // SW-16: extract per-fund rates ({fid: rate}) so they can be persisted next to corpus
+    // for legacy goals (whose goalsConfig format can't hold them).
+    const fundRates = {};
+    if (goal.funds) {
+      for (const [fid, fdata] of Object.entries(goal.funds)) {
+        if (fdata.rate != null) fundRates[fid] = fdata.rate;
+      }
+    }
+
     if (goal._isLegacy) {
       // Sync corpus + CAGR to separate storage
       const updated = {
@@ -233,13 +346,16 @@ export default function GoalDashboard({
           amount: goal.currentCorpus || 0,
           updatedAt: goal.corpusUpdatedAt || new Date().toISOString().slice(0, 10),
           assumedCAGR: goal.assumedCAGR,
+          // SW-16: stash composite-funding data the legacy config can't hold.
+          fundRates,
+          instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
         },
       };
       setCorpusData(updated);
       saveCorpusData(updated);
 
       // Convert v4 funds back to legacy format and sync everything
-      // v4: { fid: { monthlySIP, sipDate, alertEnabled } }
+      // v4: { fid: { monthlySIP, sipDate, alertEnabled, rate? } }
       // legacy: funds: { fid: amount }, sipDates: { fid: date }
       const legacyFunds = {};
       const legacySipDates = {};
@@ -291,7 +407,9 @@ export default function GoalDashboard({
         }
       }
 
-      // Store corpus + CAGR in separate storage (same as legacy goals)
+      // Store corpus + CAGR in separate storage (same as legacy goals).
+      // SW-16: also stash per-fund rates + instruments so they survive even if the goal
+      // ever gets re-read through the legacy path (and ride the cloud config blob).
       const updatedCorpus = {
         ...corpusData,
         [goal.id]: {
@@ -299,6 +417,8 @@ export default function GoalDashboard({
           amount: goal.currentCorpus || 0,
           updatedAt: goal.corpusUpdatedAt || new Date().toISOString().slice(0, 10),
           assumedCAGR: goal.assumedCAGR,
+          fundRates,
+          instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
         },
       };
       setCorpusData(updatedCorpus);
@@ -320,16 +440,52 @@ export default function GoalDashboard({
     }
     setEditingGoal(null);
     setFormOpen(false);
-  }, [corpusData, onUpdateGoalsConfig]);
+  }, [corpusData, onUpdateGoalsConfig, extraGoals, goalsConfig]);
 
   // ── Status Change (extra goals only) ────────────────────────────
+  // SW-14: when Supabase is configured, also persists status to the goals table.
+  // For localStorage fallback: 'achieved' goals are treated like 'abandoned' — added
+  // to abandonedIds so they disappear from the active view.
   const handleStatusChange = useCallback((goalId, newStatus) => {
+    // Persist status for v4 (newly-created) goals
     setExtraGoals(prev => {
       const updated = prev.map(g => g.id === goalId ? { ...g, status: newStatus } : g);
       saveExtraGoals(updated);
       return updated;
     });
-  }, []);
+    // SW-14 fix: also persist status for LEGACY goals via corpus storage, since
+    // legacy goals aren't in extraGoals. legacyToV4() reads corpus.status back on
+    // next render, so Pause/Resume/Achieved all work on existing goals.
+    setCorpusData(prev => {
+      const updated = { ...prev, [goalId]: { ...prev[goalId], status: newStatus } };
+      saveCorpusData(updated);
+      return updated;
+    });
+    // SW-14: When a goal is marked achieved, archive it from the active view.
+    // Treat 'achieved' the same as 'abandoned' in the local filter.
+    if ((newStatus === GOAL_STATUSES.ACHIEVED || newStatus === GOAL_STATUSES.ABANDONED) && onArchive) {
+      onArchive(goalId);
+    }
+  }, [onArchive]);
+
+  // SW-14 fix: restoring an archived/achieved goal must reset its status back to
+  // ACTIVE. Otherwise a goal achieved earlier still has status='achieved' after
+  // restore, which hides the Pause and Achieved buttons (they key off status).
+  // Resets status in BOTH stores (legacy corpus + v4 extraGoals), then removes the
+  // goal from the archived list via the parent's onRestore.
+  const handleRestore = useCallback((goalId) => {
+    setCorpusData(prev => {
+      const updated = { ...prev, [goalId]: { ...prev[goalId], status: GOAL_STATUSES.ACTIVE } };
+      saveCorpusData(updated);
+      return updated;
+    });
+    setExtraGoals(prev => {
+      const updated = prev.map(g => g.id === goalId ? { ...g, status: GOAL_STATUSES.ACTIVE } : g);
+      saveExtraGoals(updated);
+      return updated;
+    });
+    if (onRestore) onRestore(goalId);
+  }, [onRestore]);
 
   // ── Fund list for GoalForm ──────────────────────────────────────
   // Pass 'index' so GoalForm can derive the CAGR suggestion from the fund's benchmark index.
@@ -411,7 +567,7 @@ export default function GoalDashboard({
             goal={goal}
             onEdit={handleEdit}
             onUpdateCorpus={openCorpusUpdate}
-            onStatusChange={goal._isLegacy ? undefined : handleStatusChange}
+            onStatusChange={handleStatusChange}
             onArchive={onArchive}
           />
         ))}
@@ -449,7 +605,7 @@ export default function GoalDashboard({
                   key={goal.id}
                   goal={goal}
                   isArchived={true}
-                  onRestore={onRestore}
+                  onRestore={handleRestore}
                 />
               ))}
             </div>
@@ -464,6 +620,10 @@ export default function GoalDashboard({
         onSave={handleFormSave}
         existingGoal={editingGoal}
         trackedFunds={trackedFunds}
+        allFunds={allFunds}
+        onAddFund={onAddFund}
+        onArchiveFund={onArchiveFund}
+        onRestoreFund={onRestoreFund}
       />
 
       {/* Corpus Update Modal */}
@@ -493,13 +653,14 @@ export default function GoalDashboard({
             </div>
 
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginBottom: 4 }}>Amount (₹)</div>
+              <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginBottom: 4 }}>Amount (₹ Lakh)</div>
               <input
                 type="number"
                 value={corpusInput}
                 onChange={e => setCorpusInput(e.target.value)}
-                placeholder="e.g., 350000"
+                placeholder="e.g., 3.5"
                 min="0"
+                step="0.1"
                 autoFocus
                 style={{
                   width: '100%', padding: '8px 10px',
@@ -511,7 +672,7 @@ export default function GoalDashboard({
               />
               {corpusInput && parseFloat(corpusInput) > 0 && (
                 <div style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 4 }}>
-                  = ₹{(parseFloat(corpusInput) / 100000).toFixed(1)} Lakhs
+                  = ₹{(parseFloat(corpusInput) * 100000).toLocaleString('en-IN')}
                 </div>
               )}
             </div>
