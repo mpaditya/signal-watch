@@ -339,8 +339,9 @@ export default function GoalForm({
             onChange={e => setCurrentCorpusLakh(e.target.value)}
             placeholder="e.g., 3.5 — MF units already invested" min="0" step="0.1" />
           <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 3 }}>
-            Existing invested value (grows at the blended equity rate). RD/FD principals are
-            entered as funding sources below, not here.
+            Existing invested value. Grows at your goal's blended rate — the equity rate if
+            you have MF SIPs, otherwise the blended rate of your RD/FD/debt sources. RD/FD
+            principals are entered as funding sources below, not here.
           </div>
         </div>
 
@@ -687,11 +688,15 @@ function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, start
     }
   }
 
+  const years = parseFloat(totalYears) || 0;
   return {
     label, emoji, goalType, startDate,
+    // Compute targetDate here too so the live preview's blendedReturn() has a real horizon
+    // to value each funding source against (createGoal/updateGoal recompute it on save).
+    targetDate: startDate ? computeTargetDate(startDate, years) : undefined,
     // parseFloat (not parseInt) so fractional horizons like 1.5 years survive — a past
     // bug truncated 1.5 → 1, so only whole-year edits ever "stuck".
-    totalYears: parseFloat(totalYears) || 0,
+    totalYears: years,
     targetLakh: parseFloat(targetLakh) || 0,
     // ₹ lakhs → rupees (matches Update-Corpus modal convention).
     currentCorpus: (parseFloat(currentCorpusLakh) || 0) * 100000,

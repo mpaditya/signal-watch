@@ -610,14 +610,54 @@ function mfSipValueAtTarget(f, yearsLeft, mfRate) {
   return futureValueLumpSum(fvAtSipEnd, r, yearsLeft - endYears);
 }
 
+// Future value each EXPLICIT funding source (MF SIPs + RD/FD) contributes at the target date,
+// paired with its rate. Excludes the existing corpus (handled separately). Used by both the
+// projection and the blended-return display so they stay consistent.
+function explicitSourceFVs(goal, yearsLeft, mfRate) {
+  const out = []; // [{ fv, rate }]
+  if (goal.funds) {
+    for (const f of Object.values(goal.funds)) {
+      out.push({ fv: mfSipValueAtTarget(f, yearsLeft, mfRate), rate: Number(f.rate ?? mfRate) });
+    }
+  }
+  if (Array.isArray(goal.instruments)) {
+    for (const inst of goal.instruments) {
+      out.push({ fv: instrumentValueAtTarget(inst, yearsLeft, goal.targetDate), rate: Number(inst.rate || 0) });
+    }
+  }
+  return out;
+}
+
+// The rate the EXISTING corpus grows at.
+//
+// BUG FIX: the existing corpus used to grow at the goal's `assumedCAGR`, which defaults to the
+// equity rate (~12%) even when the goal holds ZERO equity. For an all-RD/FD goal (e.g. EPF/NPS
+// + FDs) that massively over-projected the corpus AND dominated the "blended return" display
+// (a ₹99L corpus at 12% drowned out 4 RDs at 6.5–7%, showing ~12% instead of ~6.7%).
+//
+// Now: if the goal actually has MF/equity SIPs, the existing corpus is treated as equity and
+// grows at the MF rate (as before). Otherwise it grows at the value-weighted blend of the
+// goal's real (debt) sources — so an all-debt goal's corpus grows at ~the debt rate, never the
+// equity default. Falls back to the assumed/default CAGR only when there are no funding sources.
+export function existingCorpusRate(goal, yearsLeft) {
+  const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
+  const hasEquitySIP = goal.funds && Object.values(goal.funds).some(f => Number(f.monthlySIP || 0) > 0);
+  if (hasEquitySIP) return mfRate;
+  const fvs = explicitSourceFVs(goal, yearsLeft, mfRate);
+  const totFV = fvs.reduce((s, x) => s + x.fv, 0);
+  if (totFV <= 0) return mfRate;
+  return fvs.reduce((s, x) => s + x.fv * x.rate, 0) / totFV;
+}
+
 // Project the full goal corpus at the target date by summing every funding source at its
 // own return. mfRate defaults to the goal's assumed CAGR; each MF fund may override `rate`.
 export function projectGoalComposite(goal, yearsLeft) {
   const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
   const currentCorpus = goal.currentCorpus || 0;
 
-  // Existing MF corpus grows at the (blended) equity rate.
-  let total = futureValueLumpSum(currentCorpus, mfRate, yearsLeft);
+  // Existing corpus grows at the rate of the goal's ACTUAL mix (equity rate only if the goal
+  // has equity SIPs; otherwise the debt blend) — never blindly at the equity default.
+  let total = futureValueLumpSum(currentCorpus, existingCorpusRate(goal, yearsLeft), yearsLeft);
 
   // Each MF SIP grows at its own rate (or the goal rate if unset), over its contribution window.
   if (goal.funds) {
@@ -636,11 +676,22 @@ export function projectGoalComposite(goal, yearsLeft) {
 }
 
 // Contribution-weighted blended return, for DISPLAY only (the goal's effective rate).
+//
+// BUG FIX: the existing corpus used to be weighted at `assumedCAGR` (the equity default ~12%)
+// even for an all-debt goal, so a large corpus dragged the displayed blend up to ~12% when the
+// goal actually held only RDs/FDs at 6.5–7%. It now uses existingCorpusRate() — the equity rate
+// only if the goal has equity SIPs, otherwise the blend of the goal's real (debt) sources.
 export function blendedReturn(goal) {
   const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
+  // Horizon is needed only to derive the existing-corpus rate for a no-equity goal. Prefer the
+  // real targetDate; fall back to totalYears (the live form preview may not have targetDate yet).
+  let yearsLeft = computeYearsLeft(goal.targetDate);
+  if (!(yearsLeft > 0)) yearsLeft = Number(goal.totalYears) || 1;
+  const corpusRate = existingCorpusRate(goal, yearsLeft);
+
   let weighted = 0, weight = 0;
   const add = (amount, rate) => { weighted += amount * rate; weight += amount; };
-  add(goal.currentCorpus || 0, mfRate);
+  add(goal.currentCorpus || 0, corpusRate);
   if (goal.funds) for (const f of Object.values(goal.funds)) add(Number(f.monthlySIP || 0), Number(f.rate ?? mfRate));
   if (Array.isArray(goal.instruments)) for (const inst of goal.instruments) {
     const amt = inst.type === 'FD' ? Number(inst.principal || 0) : Number(inst.monthly || 0);
