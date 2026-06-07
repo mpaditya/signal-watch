@@ -29,6 +29,7 @@ import {
   formatLakh,
   createGoal,
   updateGoal,
+  computeTargetDate,
 } from '../goalUtils';
 // AR-4: log goal create/update decisions to the audit trail
 import { logDecision, ACTION_TYPES } from '../decisions';
@@ -77,15 +78,22 @@ function saveExtraGoals(goals) {
  * Merges in corpus + CAGR data from separate storage.
  */
 function legacyToV4(goalId, legacyGoal, corpusData) {
-  const goalType = inferType(goalId, legacyGoal.label);
-  const typeDef = GOAL_TYPES[goalType];
-  const yearsLeft = legacyGoal.yearsLeft || 10;
+  const corpus = corpusData[goalId] || {};
   const now = new Date();
 
-  // Use today as start, yearsLeft as totalYears
-  const startDate = now.toISOString().slice(0, 10);
-  const targetDate = new Date(now);
-  targetDate.setFullYear(targetDate.getFullYear() + yearsLeft);
+  // The legacy goalsConfig blob only holds {label, yearsLeft, targetLakh, emoji, funds,
+  // sipDates}. It has NOWHERE to store goalType / startDate / a fractional horizon. So when
+  // the user edits those in the form we stash them next to corpus (corpus.goalType etc.) and
+  // read them back here. Without this read-back, changing a legacy goal's type or start date
+  // silently reverted: goalType fell back to inferType() and startDate was hardcoded to today.
+  const goalType = corpus.goalType || inferType(goalId, legacyGoal.label);
+  const typeDef = GOAL_TYPES[goalType];
+  // totalYears comes from the override first (may be fractional), else legacy yearsLeft.
+  const totalYears = corpus.totalYears ?? legacyGoal.yearsLeft ?? 10;
+  const yearsLeft = totalYears; // kept for the funds-loop var name below
+
+  const startDate = corpus.startDate || now.toISOString().slice(0, 10);
+  const targetDate = computeTargetDate(startDate, totalYears);
 
   // Convert funds: {fid: amount} + sipDates: {fid: date}
   //            →   {fid: {monthlySIP, sipDate, alertEnabled}}
@@ -99,8 +107,6 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
       };
     }
   }
-
-  const corpus = corpusData[goalId] || {};
 
   // SW-16: legacy goalsConfig has no place for per-fund rates or RD/FD instruments,
   // so we stash those alongside corpus (corpus.fundRates, corpus.instruments) and merge
@@ -117,8 +123,8 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
     emoji: legacyGoal.emoji || typeDef?.emoji || '🎯',
     goalType,
     startDate,
-    targetDate: targetDate.toISOString().slice(0, 10),
-    totalYears: yearsLeft,
+    targetDate,
+    totalYears,
     currentCorpus: corpus.amount || 0,
     corpusUpdatedAt: corpus.updatedAt || null,
     targetLakh: legacyGoal.targetLakh || 0,
@@ -349,6 +355,12 @@ export default function GoalDashboard({
           // SW-16: stash composite-funding data the legacy config can't hold.
           fundRates,
           instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
+          // Stash goalType / startDate / totalYears too — the legacy goalsConfig blob can't
+          // hold them, so legacyToV4 reads them back from here. Without this, editing a
+          // legacy goal's type or start date (or a fractional horizon) silently reverted.
+          goalType: goal.goalType,
+          startDate: goal.startDate,
+          totalYears: goal.totalYears,
         },
       };
       setCorpusData(updated);
@@ -419,6 +431,9 @@ export default function GoalDashboard({
           assumedCAGR: goal.assumedCAGR,
           fundRates,
           instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
+          goalType: goal.goalType,
+          startDate: goal.startDate,
+          totalYears: goal.totalYears,
         },
       };
       setCorpusData(updatedCorpus);

@@ -770,10 +770,19 @@ export function updateGoal(existingGoal, updates) {
 
 /**
  * Compute target date from start date + total years.
+ *
+ * Supports FRACTIONAL years (e.g. 1.5 → +1 year +6 months). `Date.setFullYear`
+ * silently truncates a fractional year argument, so we split the horizon into whole
+ * years + rounded months and apply them separately. Exported so the dashboard's
+ * legacy-goal bridge and the form's live preview compute the target date identically.
  */
-function computeTargetDate(startDateStr, totalYears) {
+export function computeTargetDate(startDateStr, totalYears) {
   const d = new Date(startDateStr);
-  d.setFullYear(d.getFullYear() + totalYears);
+  const years = Number(totalYears) || 0;
+  const wholeYears = Math.trunc(years);
+  const extraMonths = Math.round((years - wholeYears) * 12);
+  d.setFullYear(d.getFullYear() + wholeYears);
+  d.setMonth(d.getMonth() + extraMonths);
   return d.toISOString().slice(0, 10);
 }
 
