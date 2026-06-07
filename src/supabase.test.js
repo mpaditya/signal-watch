@@ -124,6 +124,27 @@ describe('supabase.js — fallback mode (no env vars)', () => {
     const result = await fetchDecisions()
     expect(result).toEqual([])
   })
+
+  // AR-1b: user_blobs fallback to localStorage when offline / not configured.
+  it('saveUserBlob writes the blob to localStorage under its key', async () => {
+    const { saveUserBlob } = await import('./supabase.js')
+    const corpus = { retirement: { amount: 800000, fundRates: { niscf: 13.5 }, instruments: [] } }
+    const { error } = await saveUserBlob('artha_goal_corpus', corpus)
+    expect(error).toBeNull()
+    expect(JSON.parse(localStorage.getItem('artha_goal_corpus'))).toEqual(corpus)
+  })
+
+  it('fetchUserBlob reads the blob back from localStorage', async () => {
+    const { fetchUserBlob } = await import('./supabase.js')
+    const overlay = { added: [{ id: 'newfund', name: 'New Fund' }], archivedIds: ['niscf'] }
+    localStorage.setItem('artha_funds_v1', JSON.stringify(overlay))
+    expect(await fetchUserBlob('artha_funds_v1')).toEqual(overlay)
+  })
+
+  it('fetchUserBlob returns null when the key is absent', async () => {
+    const { fetchUserBlob } = await import('./supabase.js')
+    expect(await fetchUserBlob('artha_goal_corpus')).toBeNull()
+  })
 })
 
 describe('supabase.js — auth helpers', () => {
@@ -286,6 +307,46 @@ describe('supabase.js — authenticated requests use the user access_token (RLS)
     await mod.upsertGoal({ id: 'g1', label: 'Edu', targetLakh: 75, yearsLeft: 12, funds: { a: 2000 } })
     expect(body.target_lakh).toBe(75)   // mapped column present
     expect(body.label).toBeUndefined()  // raw key not sent (would 400)
+    mod.clearSession()
+  })
+
+  // AR-1b: saveUserBlob upserts to user_blobs with the user_id + key + value, as an upsert
+  // (on_conflict=user_id,key) authenticated with the user's token. This is the contract that
+  // makes corpus/fund-overlay durable across devices instead of localStorage-only.
+  it('saveUserBlob POSTs {user_id, key, value} to user_blobs as a composite-key upsert', async () => {
+    const mod = await import('./supabase.js')
+    mod.setSession({ access_token: 'user-jwt', user: { id: 'user-77' } })
+    let url, opts
+    vi.stubGlobal('fetch', vi.fn(async (u, o) => {
+      url = u; opts = o
+      return { ok: true, status: 200, json: async () => [{}] }
+    }))
+    const value = { retirement: { amount: 500000, instruments: [{ type: 'FD' }] } }
+    const { error } = await mod.saveUserBlob('artha_goal_corpus', value)
+    expect(error).toBeNull()
+    expect(url).toContain('/rest/v1/user_blobs')
+    expect(url).toContain('on_conflict=user_id,key')         // composite-key upsert
+    expect(opts.headers.Authorization).toBe('Bearer user-jwt') // user token (RLS)
+    const body = JSON.parse(opts.body)
+    expect(body).toMatchObject({ user_id: 'user-77', key: 'artha_goal_corpus', value })
+    // localStorage mirror still written
+    expect(JSON.parse(localStorage.getItem('artha_goal_corpus'))).toEqual(value)
+    mod.clearSession()
+  })
+
+  it('fetchUserBlob GETs the row for (user_id, key) and returns its value', async () => {
+    const mod = await import('./supabase.js')
+    mod.setSession({ access_token: 'user-jwt', user: { id: 'user-77' } })
+    const stored = { added: [{ id: 'f1' }], archivedIds: [] }
+    let url
+    vi.stubGlobal('fetch', vi.fn(async (u) => {
+      url = u
+      return { ok: true, status: 200, json: async () => [{ value: stored }] }
+    }))
+    const result = await mod.fetchUserBlob('artha_funds_v1')
+    expect(url).toContain('user_id=eq.user-77')
+    expect(url).toContain('key=eq.artha_funds_v1')
+    expect(result).toEqual(stored)
     mod.clearSession()
   })
 

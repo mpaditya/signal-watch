@@ -142,8 +142,38 @@ DROP POLICY IF EXISTS "decisions_insert_own" ON decisions;
 CREATE POLICY "decisions_select_own" ON decisions FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "decisions_insert_own" ON decisions FOR INSERT WITH CHECK (auth.uid() = user_id);
 
--- ─── Done! All 5 tables + RLS created. ───────────────────
+-- ─── 004: user_blobs (AR-1b multi-device cloud durability) ─
+-- Generic per-user key-value JSONB store for localStorage blobs the goals/config tables
+-- can't hold: artha_goal_corpus (corpus + per-fund rates + RD/FD instruments + legacy
+-- type/date overrides) and artha_funds_v1 (SW-15 fund overlay).
+CREATE TABLE IF NOT EXISTS user_blobs (
+  user_id    UUID         NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  key        TEXT         NOT NULL,
+  value      JSONB        NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, key)
+);
+
+DROP TRIGGER IF EXISTS user_blobs_updated_at ON user_blobs;
+CREATE TRIGGER user_blobs_updated_at
+  BEFORE UPDATE ON user_blobs
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+ALTER TABLE user_blobs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "user_blobs_select_own" ON user_blobs;
+DROP POLICY IF EXISTS "user_blobs_insert_own" ON user_blobs;
+DROP POLICY IF EXISTS "user_blobs_update_own" ON user_blobs;
+DROP POLICY IF EXISTS "user_blobs_delete_own" ON user_blobs;
+
+CREATE POLICY "user_blobs_select_own" ON user_blobs FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "user_blobs_insert_own" ON user_blobs FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "user_blobs_update_own" ON user_blobs FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "user_blobs_delete_own" ON user_blobs FOR DELETE USING (auth.uid() = user_id);
+
+-- ─── Done! All 6 tables + RLS created. ───────────────────
 SELECT 'Migration complete' AS status,
   (SELECT count(*) FROM information_schema.tables
    WHERE table_schema = 'public'
-   AND table_name IN ('goals','config','signal_history','decisions')) AS tables_created;
+   AND table_name IN ('goals','config','signal_history','decisions','user_blobs')) AS tables_created;
