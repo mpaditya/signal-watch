@@ -25,10 +25,15 @@ Personal AI finance co-pilot for Indian mutual fund investing. React 18 + Vite, 
 in-browser. Two goals: (1) PRIMARY — help the builder make better investment decisions;
 (2) SECONDARY — learn AI-driven development and build a production-grade app.
 
-## Current Sprint (S3)
-AR-1 Supabase migration, AR-2 magic-link auth, AR-3 signal history, AR-4 decisions audit log,
-SW-14 goal status enum, SE-10 prompt-injection hardening. (An "agile one-shot" build of S3 lives
-on branch `experiment/agile-sprint3`.)
+## Current State (Sprint 3 DONE — merged to main, Jun 2026)
+Shipped: AR-1 (Supabase sync: goals+config+corpus, read-back, token refresh), AR-2 (magic-link
+auth + sessionStorage), AR-3 (signal history), AR-4 (decisions log, all 6 actions), SW-14 (goal
+status enum), SE-10 (prompt-injection hardening), SW-15 (dynamic add/archive funds), SW-16
+(composite goals: MF+RD+FD per-instrument returns + blended return), QA-1 (real Vitest/RTL suite —
+168 tests; the project previously had NO working tests). See docs/MASTER-BACKLOG.md.
+
+Next (Sprint 4): AR-1b (multi-device cloud-sync of instruments/per-fund-rates/fund-overlay —
+currently localStorage + same-browser only), then AN-1 (signal trends), AN-5 (XIRR), SE-2 (rate limiting).
 
 ## Architecture
 - Frontend: React 18 + Vite + Recharts. Single-page app, inline CSS + CSS variables (no Tailwind).

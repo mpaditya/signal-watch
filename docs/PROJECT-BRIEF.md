@@ -230,8 +230,10 @@ Signal verdicts now check goal horizon even for neutral signals. Previously, a 2
 
 | Scheduling | GitHub Actions (cron) | Free. 2,000 minutes/month on free tier. |
 
-| Database | \*\*Supabase Postgres (free tier)\*\* | NEW in Sprint 3 (AR-1). Tables: goals, config, signal\_history, decisions. RLS enforced. REST API used directly (no SDK). |
-| Auth | \*\*Supabase Auth (magic link)\*\* | NEW in Sprint 3 (AR-2). Email OTP flow. Session in memory only. "Continue without account" for local mode. |
+| Database | \*\*Supabase Postgres (free tier)\*\* | Sprint 3 (AR-1). Tables: goals, config, signal\_history, decisions. RLS enforced. REST API used directly (no SDK). Cloud sync of goals+config+corpus (read-back on login, debounced write-through). NOTE: SW-16 instruments/per-fund-rates + SW-15 fund overlay are localStorage-only for now (multi-device sync = AR-1b). |
+| Auth | \*\*Supabase Auth (magic link)\*\* | Sprint 3 (AR-2). Email OTP flow. Session in \*\*sessionStorage\*\* (survives reload, clears on tab close) + refresh-token rotation on 401 (DEC-050, revises the in-memory choice). user\_id decoded from JWT sub. "Continue without account" for local mode. |
+| Goal funding | \*\*Composite: MF + RD + FD, per-instrument returns\*\* | Sprint 3 (SW-16). Each instrument has its own rate; goal return is a derived blended display. Dynamic add/archive fund universe (SW-15). |
+| Testing | \*\*Vitest + jsdom + React Testing Library\*\* | Sprint 3 (QA-1, DEC-049). `npm test`, 168 tests, all import real modules. Previously the project had NO working tests. Non-negotiable testing rules in CLAUDE.md. |
 | Hosting | \*\*GitHub Pages (free, unlimited)\*\* | NEW in v5: Migrated from Netlify. Zero build limits. |
 
 | Version Control | GitHub (mpaditya/signal-watch) | Source of truth |
