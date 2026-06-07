@@ -36,6 +36,7 @@ import {
   validateGoal,
   computeSuggestedCAGR,
   blendedReturn,
+  computeTargetDate,
 } from '../goalUtils';
 
 const INDEX_DISPLAY = {
@@ -137,8 +138,9 @@ export default function GoalForm({
   // ── Target date display ───────────────────────────────────────────
   const targetDateDisplay = useMemo(() => {
     if (!startDate || !totalYears) return '—';
-    const d = new Date(startDate);
-    d.setFullYear(d.getFullYear() + parseInt(totalYears, 10));
+    // parseFloat + shared computeTargetDate so the preview honours fractional years
+    // (e.g. 1.5) exactly like the persisted goal does.
+    const d = new Date(computeTargetDate(startDate, parseFloat(totalYears)));
     return d.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
   }, [startDate, totalYears]);
 
@@ -322,7 +324,7 @@ export default function GoalForm({
             <div>
               <label style={labelStyle}>Horizon (years)</label>
               <input aria-label="Horizon (years)" style={inputStyle} type="number" value={totalYears}
-                onChange={e => setTotalYears(e.target.value)} min="1" max="40" />
+                onChange={e => setTotalYears(e.target.value)} min="1" max="40" step="0.5" />
             </div>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, fontWeight: 500 }}>
@@ -665,7 +667,9 @@ function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, start
 
   return {
     label, emoji, goalType, startDate,
-    totalYears: parseInt(totalYears, 10) || 0,
+    // parseFloat (not parseInt) so fractional horizons like 1.5 years survive — a past
+    // bug truncated 1.5 → 1, so only whole-year edits ever "stuck".
+    totalYears: parseFloat(totalYears) || 0,
     targetLakh: parseFloat(targetLakh) || 0,
     // ₹ lakhs → rupees (matches Update-Corpus modal convention).
     currentCorpus: (parseFloat(currentCorpusLakh) || 0) * 100000,

@@ -118,3 +118,35 @@ describe('GoalDashboard — SW-16 RD instrument persists across reload', () => {
     expect(screen.getAllByText(/RD/).length).toBeGreaterThan(0)
   })
 })
+
+// Regression: editing a LEGACY goal's type / start date / fractional horizon must reflect
+// on the card AND survive a reload. The bug: legacyToV4 inferred goalType from the id/label
+// and hardcoded startDate=today, and neither (nor a fractional horizon) was persisted — so
+// changing a legacy goal's type to Emergency Fund silently reverted to Retirement, and a
+// 1.5-year horizon truncated to 1. These assertions FAIL on the pre-fix code.
+describe('GoalDashboard — legacy goal type/startDate/fractional-horizon edits persist', () => {
+  it('switching a legacy goal to Emergency Fund + 1.5y reflects and survives remount', () => {
+    const { unmount } = render(<Harness initialConfig={CONFIG} />)
+
+    // Starts life as Retirement (goalType inferred from the legacy id): the card shows the
+    // Retirement type badge, NOT an Emergency Fund one. (On the buggy code it stayed this way
+    // even after switching type, because legacyToV4 re-inferred 'retirement' every render.)
+    expect(screen.queryByText(/Emergency Fund/)).not.toBeInTheDocument()
+
+    // Open the edit form, switch type to Emergency Fund, set a fractional horizon.
+    fireEvent.click(screen.getByRole('button', { name: /Edit/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Emergency Fund/i }))
+    fireEvent.change(screen.getByLabelText(/Horizon/i), { target: { value: '1.5' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save Changes/i }))
+
+    // Card now reflects the new type: Emergency Fund is a fixed goal → "Non-negotiable".
+    expect(screen.getByText(/Emergency Fund/)).toBeInTheDocument()
+    expect(screen.getByText(/Non-negotiable/)).toBeInTheDocument()
+
+    // Remount from the same localStorage — the override round-trips via the corpus store.
+    unmount()
+    render(<Harness initialConfig={CONFIG} />)
+    expect(screen.getByText(/Emergency Fund/)).toBeInTheDocument()
+    expect(screen.getByText(/Non-negotiable/)).toBeInTheDocument()
+  })
+})

@@ -29,6 +29,7 @@ import {
   createGoal,
   updateGoal,
   computeGoalHealth,
+  computeTargetDate,
 } from './goalUtils.js'
 
 // ISO date `years` from now (negative = past). For instrument maturity/target tests.
@@ -330,5 +331,25 @@ describe('SW-16 CRUD — createGoal / updateGoal preserve funds[].rate and instr
     const hNo = computeGoalHealth(withoutRD)
     const hYes = computeGoalHealth(withRD)
     expect(hYes.projected).toBeGreaterThan(hNo.projected)
+  })
+})
+
+describe('computeTargetDate — fractional years map to whole years + months', () => {
+  it('a whole-year horizon advances only the year', () => {
+    expect(computeTargetDate('2026-01-15', 2)).toBe('2028-01-15')
+  })
+
+  it('1.5 years adds 1 year + 6 months (the bug truncated the .5)', () => {
+    // setFullYear(+1.5) silently truncates to +1; the fix splits into +1y +6m.
+    expect(computeTargetDate('2026-01-15', 1.5)).toBe('2027-07-15')
+  })
+
+  it('0.25 years adds ~3 months', () => {
+    expect(computeTargetDate('2026-01-15', 0.25)).toBe('2026-04-15')
+  })
+
+  it('a fractional addition that rolls past December crosses the year boundary', () => {
+    // Nov 2026 + 0.25y (3 months) → Feb 2027.
+    expect(computeTargetDate('2026-11-15', 0.25)).toBe('2027-02-15')
   })
 })
