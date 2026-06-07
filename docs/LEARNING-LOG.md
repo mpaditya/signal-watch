@@ -745,6 +745,49 @@ Suggested framing: "In Artha I had to design a P/E data pipeline with no backend
 
 ---
 
+## [2026-06-07] AR-1b (multi-device cloud durability) + legacy-goal edit-persistence fix
+
+### What changed
+Two things shipped together. (1) A bug fix: editing a **legacy goal's** type, start date, or a fractional horizon (e.g. 1.5y) didn't reflect on the card. (2) AR-1b: the corpus side-channel + fund overlay now sync to Supabase, so they survive a browser wipe / second device.
+
+### Files touched
+- `src/goalUtils.js` — `computeTargetDate` now handles fractional years (whole years + rounded months); exported.
+- `src/components/GoalForm.jsx` — `rowsToGoal` uses `parseFloat` not `parseInt`; Horizon input `step="0.5"`; preview uses shared `computeTargetDate`.
+- `src/components/GoalDashboard.jsx` — `legacyToV4` reads `goalType`/`startDate`/`totalYears` back from the corpus side-channel; `handleFormSave` persists them; AR-1b corpus write-through (debounced) + read-back.
+- `src/supabase.js` — `fetchUserBlob`/`saveUserBlob`; migration helper seeds the two blobs.
+- `src/App.jsx` — fund-overlay cloud write on add/archive + login read-back.
+- `supabase/migrations/004_user_blobs.sql` (+ combined file) — new `user_blobs` table.
+
+### Walkthrough (Python-developer framing)
+A "legacy goal" is one stored in the old `goalsConfig` dict (`{retirement: {...}}`). That dict has fixed keys — no slot for `goalType` or `startDate`. The dashboard *reconstructs* a richer v4 object every render via `legacyToV4()`, and it was **guessing** the type from the goal's id/label and hardcoding `startDate = today`. So your edit had nowhere to live: on the next render the guess overwrote it. The fix uses the same trick the app already used for RD/FD instruments — stash the un-storable fields in a parallel `artha_goal_corpus` dict and read them back. Think of it as a sidecar dict for fields the legacy schema can't hold.
+
+The fractional-year bug is a classic `int()` vs `float()` truncation: `parseInt("1.5") == 1`. And even once stored, JS's `date.setFullYear(year + 1.5)` truncates the `.5`, so `computeTargetDate` now splits 1.5 → +1 year +6 months.
+
+AR-1b is the same write-through cache pattern as AR-1 (DEC-048), generalised: one `user_blobs` table that's just `dict[user][key] = json`. The subtle part is the **mount race** on a second device: a naive write-through effect would upload the local default the instant the component mounts, clobbering the cloud before the read-back finishes. The 1.5s debounce on the upload lets the read-back GET land first; its `setState` resets the debounce timer, so the *hydrated cloud value* is what eventually uploads. Cloud-authoritative-on-login, mechanically enforced by timing.
+
+### Data flow diagram
+```
+Edit legacy goal type → handleFormSave → corpusData[id].goalType = 'emergency'
+                                       → saveCorpusData (localStorage)
+                                       → (debounced 1.5s) saveUserBlob('artha_goal_corpus') → Supabase user_blobs
+Re-render → legacyToV4 reads corpus.goalType → card shows "Emergency Fund"
+
+Second device login → fetchUserBlob('artha_goal_corpus') → setCorpusData(cloud) [authoritative]
+                    → resets the write-through debounce → re-uploads the hydrated value (no clobber)
+```
+
+### Mental models reinforced
+- **Side-channel / sidecar storage** — when a fixed schema can't hold a field, a parallel key-value store keyed by the same id is the pragmatic escape hatch (vs a risky schema migration).
+- **Derived vs persisted state** — inferring a value every render (`inferType`) silently defeats user edits; persist what the user sets.
+- **Cloud-authoritative-on-login via debounce timing** — correctness of the read-back/write-through race is enforced by the debounce window, not a lock or version vector.
+- **Generic over bespoke** — one key-value table beats N bespoke columns for "blobs the rigid tables can't hold."
+
+### Open questions
+- No conflict resolution if two devices edit offline then both sync (last-writer-wins per blob). A per-goal `updated_at` or CRDT-ish merge would be needed for true multi-device concurrency — out of scope for a single-user app, revisit if it ever goes multi-user.
+- The corpus blob and the goals-table `corpus` column now both carry amounts (two sources). They converge because both write on the same action, but a future cleanup could make the blob the sole source.
+
+---
+
 ### System Design primitives checklist
 
 Mark off as you can articulate each rationale without notes:

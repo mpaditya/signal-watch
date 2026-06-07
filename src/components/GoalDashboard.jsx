@@ -19,7 +19,7 @@
  * References: Brief §4.1–4.3, SW-1, SW-2
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import GoalCard from './GoalCard';
 import GoalForm from './GoalForm';
 import {
@@ -37,6 +37,8 @@ import { logDecision, ACTION_TYPES } from '../decisions';
 import {
   isSupabaseConfigured, isAuthenticated, fetchGoals as cloudFetchGoals,
   upsertGoal as cloudUpsertGoal,
+  // AR-1b: cloud durability for the corpus blob (composite data the goals table can't hold).
+  fetchUserBlob, saveUserBlob,
 } from '../supabase';
 
 // ─── Bridge: convert existing goalsConfig to v4 goal objects ───────
@@ -196,6 +198,40 @@ export default function GoalDashboard({
       });
     }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // AR-1b: on login, the cloud corpus blob is the authoritative source for composite goal
+  // data the goals-table corpus column can't hold — per-fund rates, RD/FD instruments, and
+  // the legacy goalType/startDate/totalYears overrides. Mirrors the DEC-048/049 goalsConfig
+  // read-back: cloud wins on login, localStorage is just a write-through cache. Ref-guarded
+  // so it runs once. Runs alongside the amount-only read-back above (the blob is a superset;
+  // they converge because both ultimately reflect the same synced state).
+  const corpusHydratedRef = useRef(false);
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !isAuthenticated() || corpusHydratedRef.current) return;
+    corpusHydratedRef.current = true;
+    fetchUserBlob(CORPUS_STORAGE_KEY).then(cloud => {
+      if (cloud && typeof cloud === 'object' && Object.keys(cloud).length > 0) {
+        setCorpusData(cloud);
+        saveCorpusData(cloud);
+        console.log('[AR-1b] Hydrated corpus blob from cloud');
+      }
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // AR-1b: write the whole corpus blob through to the cloud whenever it changes. Debounced
+  // 1.5s so a burst of edits collapses into one network write, AND so the read-back above
+  // wins the initial-mount race on a second device (the GET resolves before this POST fires;
+  // its setCorpusData resets this timer, so the hydrated cloud value is what gets re-uploaded,
+  // never the stale local default). Same pattern as App.jsx's config write-through.
+  const corpusCloudTimer = useRef(null);
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !isAuthenticated()) return;
+    clearTimeout(corpusCloudTimer.current);
+    corpusCloudTimer.current = setTimeout(() => {
+      saveUserBlob(CORPUS_STORAGE_KEY, corpusData);
+    }, 1500);
+    return () => clearTimeout(corpusCloudTimer.current);
+  }, [corpusData]);
 
   // Build unified goals array: legacy goals from goalsConfig + extra goals NOT already in goalsConfig
   // (New goals get injected into goalsConfig on save, so we skip them from extraGoals to avoid dupes)

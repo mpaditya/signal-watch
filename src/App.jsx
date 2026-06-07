@@ -15,12 +15,14 @@ import{
   // AR-1 write-through/read-back: cloud config helpers (aliased to avoid clashing with
   // App.jsx's own local loadConfig/saveConfig localStorage helpers below).
   fetchConfig as cloudFetchConfig, saveConfig as cloudSaveConfig,
-  upsertGoal as cloudUpsertGoal
+  upsertGoal as cloudUpsertGoal,
+  // AR-1b: cloud durability for the SW-15 fund overlay (multi-device add/archive funds).
+  fetchUserBlob as cloudFetchUserBlob, saveUserBlob as cloudSaveUserBlob
 }from'./supabase'
 // AR-4: Decision queue flush on auth
 import{flushDecisionQueue,logDecision,ACTION_TYPES}from'./decisions'
 // SW-15: dynamic fund universe — default funds + user-added/archived overlay in localStorage.
-import{loadUserFunds,saveUserFunds,effectiveFunds,mergeFunds,addFund,archiveFund,restoreFund}from'./funds'
+import{loadUserFunds,saveUserFunds,effectiveFunds,mergeFunds,addFund,archiveFund,restoreFund,FUNDS_STORAGE_KEY}from'./funds'
 
 const CAT={
   'Small Cap':       {bg:'#FAECE7',text:'#993C1D'},
@@ -466,7 +468,15 @@ export default function App(){
   const FUNDS=useMemo(()=>effectiveFunds(fundOverlay),[fundOverlay])
   const allFunds=useMemo(()=>mergeFunds(fundOverlay),[fundOverlay])
   // Persist overlay + pure helpers wrapped to update state and storage together.
-  const persistOverlay=useCallback((next)=>{setFundOverlay(next);saveUserFunds(next)},[])
+  // AR-1b: also write the overlay through to the cloud (user_blobs) so add/archive-fund
+  // survives on a second device. cloudSaveUserBlob no-ops when offline/not signed in and
+  // mirrors to localStorage itself, so this stays correct in every mode. Fund add/archive is
+  // a deliberate, infrequent action, so we write immediately (no debounce needed).
+  const persistOverlay=useCallback((next)=>{
+    setFundOverlay(next)
+    saveUserFunds(next)
+    cloudSaveUserBlob(FUNDS_STORAGE_KEY,{added:next.added||[],archivedIds:next.archivedIds||[]})
+  },[])
   const handleAddFund=useCallback((fund)=>persistOverlay(addFund(fundOverlay,fund)),[fundOverlay,persistOverlay])
   const handleArchiveFund=useCallback((id)=>persistOverlay(archiveFund(fundOverlay,id)),[fundOverlay,persistOverlay])
   const handleRestoreFund=useCallback((id)=>persistOverlay(restoreFund(fundOverlay,id)),[fundOverlay,persistOverlay])
@@ -582,6 +592,18 @@ export default function App(){
         console.log('[AR-1] Hydrated goalsConfig from cloud')
       }
     }).catch(e=>console.warn('[AR-1] cloud read-back failed:',e.message))
+
+    // AR-1b: hydrate the SW-15 fund overlay from the cloud too (multi-device add/archive).
+    // Cloud is authoritative on login (same contract as goalsConfig); only overwrite when the
+    // cloud actually has an overlay so a first-time user keeps their local one.
+    cloudFetchUserBlob(FUNDS_STORAGE_KEY).then(cloud=>{
+      if(cloud&&typeof cloud==='object'&&(Array.isArray(cloud.added)||Array.isArray(cloud.archivedIds))){
+        const overlay={added:cloud.added||[],archivedIds:cloud.archivedIds||[]}
+        setFundOverlay(overlay)
+        saveUserFunds(overlay)
+        console.log('[AR-1b] Hydrated fund overlay from cloud')
+      }
+    }).catch(e=>console.warn('[AR-1b] fund-overlay read-back failed:',e.message))
   },[authReady]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist config: always write the localStorage cache immediately. When authenticated,

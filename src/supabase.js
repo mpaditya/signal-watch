@@ -314,6 +314,46 @@ export async function saveConfig(value) {
   }
 }
 
+// ─── User blobs (AR-1b) ─────────────────────────────────────────────────────────
+// Generic per-user key-value store for localStorage blobs the goals/config tables can't
+// hold. Each blob is identified by its localStorage key (e.g. 'artha_goal_corpus',
+// 'artha_funds_v1') so callers reuse the same key on both sides. value is arbitrary JSON.
+//
+// fetchUserBlob(key)        — returns the cloud value (or localStorage fallback), else null.
+// saveUserBlob(key, value)  — write-through: always localStorage, plus cloud when signed in.
+//
+// Python analogy: a dict[user][key] = json backed by Postgres, with a localStorage mirror.
+
+export async function fetchUserBlob(key) {
+  if (!isSupabaseConfigured() || !isAuthenticated()) {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : null } catch { return null }
+  }
+  try {
+    const userId = getUserId()
+    const rows = await supabaseRequest('GET', 'user_blobs', null,
+      `?user_id=eq.${userId}&key=eq.${encodeURIComponent(key)}&limit=1`)
+    return rows?.[0]?.value ?? null
+  } catch (e) {
+    console.warn(`[supabase] fetchUserBlob(${key}) failed, using localStorage:`, e.message)
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : null } catch { return null }
+  }
+}
+
+export async function saveUserBlob(key, value) {
+  // Write-through to localStorage first so the app is correct even offline.
+  try { localStorage.setItem(key, JSON.stringify(value)) } catch {}
+
+  if (!isSupabaseConfigured() || !isAuthenticated()) return { error: null }
+  try {
+    // Composite-key upsert: on_conflict=user_id,key → merge-duplicates (see supabaseRequest).
+    await supabaseRequest('POST', 'user_blobs',
+      { user_id: getUserId(), key, value }, '?on_conflict=user_id,key')
+    return { error: null }
+  } catch (e) {
+    return { error: e.message }
+  }
+}
+
 // ─── Signal history table ─────────────────────────────────────────────────────
 // Written by GitHub Actions (scripts/alert.py) using service role key.
 // Read by React app using user's anon key (RLS: user can only read their own rows).
@@ -406,6 +446,21 @@ export async function migrateLocalStorageToSupabase() {
       }
     }
   } catch (e) { errors.push(`goals: ${e.message}`) }
+
+  // AR-1b: migrate the composite/overlay blobs that the goals + config tables can't hold:
+  //   artha_goal_corpus — corpus amounts, status, per-fund rates, RD/FD instruments, and
+  //                       the legacy goalType/startDate/totalYears overrides.
+  //   artha_funds_v1    — the SW-15 dynamic fund universe overlay ({ added, archivedIds }).
+  // Without this, a second device (or a browser-wiped one) lost all of it on first login.
+  for (const key of ['artha_goal_corpus', 'artha_funds_v1']) {
+    try {
+      const raw = localStorage.getItem(key)
+      if (raw) {
+        const { error } = await saveUserBlob(key, JSON.parse(raw))
+        if (error) errors.push(`${key}: ${error}`)
+      }
+    } catch (e) { errors.push(`${key}: ${e.message}`) }
+  }
 
   // Migrate abandoned goal IDs → status = 'abandoned' (SW-14)
   try {
