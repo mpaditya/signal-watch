@@ -353,3 +353,43 @@ describe('computeTargetDate — fractional years map to whole years + months', (
     expect(computeTargetDate('2026-11-15', 0.25)).toBe('2027-02-15')
   })
 })
+
+describe('SW-16b — MF SIP contribution window (start / optional end date)', () => {
+  const goalWith = (fundExtra) => ({
+    goalType: 'retirement', assumedCAGR: 12, currentCorpus: 0,
+    funds: { a: { monthlySIP: 10000, rate: 12, ...fundExtra } },
+  })
+
+  it('no start/end dates → identical to the old full-horizon SIP projection (backward-compatible)', () => {
+    // The whole point of backward-compat: legacy goals must project EXACTLY as before.
+    const proj = projectGoalComposite(goalWith({}), 10)
+    expectClose(proj, futureValueSIP(10000, 12, 10), 0.001)
+  })
+
+  it('a SIP that ENDS before the target projects the same as: SIP for the active years, then grow as a lump to target', () => {
+    // SIP runs for ~5 of the 10 years, then the accumulated amount grows for the remaining 5.
+    const proj = projectGoalComposite(goalWith({ endDate: isoIn(5) }), 10)
+    const expected = futureValueLumpSum(futureValueSIP(10000, 12, 5), 12, 5)
+    expectClose(proj, expected, 1.5) // ~1.5% tolerance absorbs 365.25-day rounding
+  })
+
+  it('ending a SIP early yields LESS than running it to target, but more than zero', () => {
+    const full = projectGoalComposite(goalWith({}), 10)
+    const early = projectGoalComposite(goalWith({ endDate: isoIn(5) }), 10)
+    expect(early).toBeLessThan(full)
+    expect(early).toBeGreaterThan(0)
+  })
+
+  it('a SIP that STARTS in the future contributes only over its remaining active years', () => {
+    // Starts in ~3 years, runs to the 10-year target → ~7 active years, grown 0 more.
+    const proj = projectGoalComposite(goalWith({ startDate: isoIn(3) }), 10)
+    expectClose(proj, futureValueSIP(10000, 12, 7), 1.5)
+    expect(proj).toBeLessThan(projectGoalComposite(goalWith({}), 10)) // less than from-now
+  })
+
+  it('a SIP that already ended (end date in the past) adds no future contribution', () => {
+    // Its accrued value is assumed to live in currentCorpus, so future contribution is 0.
+    const proj = projectGoalComposite(goalWith({ endDate: isoIn(-1) }), 10)
+    expect(proj).toBe(0)
+  })
+})

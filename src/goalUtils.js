@@ -575,6 +575,41 @@ export function instrumentValueAtTarget(inst, yearsLeft, targetDateStr) {
   return 0;
 }
 
+// Value an MF SIP contributes to the goal AT the target date, honouring an optional
+// contribution window (startDate / endDate).
+//
+// WHY (SW-16b): a SIP may have started in the past or be scheduled to STOP before the goal
+// matures (e.g. "I'll run this SIP for 5 more years, but the goal is 10 years out"). The old
+// model assumed every SIP runs from now to the target. Now:
+//   • startDate in the FUTURE → contributions only begin then (no contribution before).
+//   • startDate today/in the PAST → contributes from now (past contributions are already
+//     captured in currentCorpus, which grows via the lump-sum term — so we never double-count).
+//   • endDate before target → contributions stop at endDate; the amount accumulated by then
+//     grows as a lump sum at the same rate until the target date.
+//   • no startDate → treated as "from now"; no endDate → "runs to target". This makes the
+//     function identical to the old futureValueSIP(...) for legacy goals (backward-compatible).
+function mfSipValueAtTarget(f, yearsLeft, mfRate) {
+  const m = Number(f.monthlySIP || 0);
+  const r = Number(f.rate ?? mfRate);
+  if (m <= 0 || yearsLeft <= 0) return 0;
+  const now = new Date().toISOString().slice(0, 10);
+
+  // When (in years from now) the SIP starts contributing. Past/today → 0.
+  let startYears = f.startDate ? yearsBetween(now, f.startDate) : 0;
+  if (startYears < 0) startYears = 0;
+  if (startYears >= yearsLeft) return 0; // starts on/after the target → contributes nothing
+
+  // When the SIP stops contributing. No endDate → runs to the target; capped at the target.
+  let endYears = (f.endDate != null && f.endDate !== '') ? yearsBetween(now, f.endDate) : yearsLeft;
+  if (endYears > yearsLeft) endYears = yearsLeft;
+  if (endYears <= startYears) return 0; // no active contribution window in the future
+
+  const activeYears = endYears - startYears;
+  const fvAtSipEnd = futureValueSIP(m, r, activeYears); // value the moment the SIP stops
+  // Grow that accumulated lump from the SIP-end date to the target date.
+  return futureValueLumpSum(fvAtSipEnd, r, yearsLeft - endYears);
+}
+
 // Project the full goal corpus at the target date by summing every funding source at its
 // own return. mfRate defaults to the goal's assumed CAGR; each MF fund may override `rate`.
 export function projectGoalComposite(goal, yearsLeft) {
@@ -584,10 +619,10 @@ export function projectGoalComposite(goal, yearsLeft) {
   // Existing MF corpus grows at the (blended) equity rate.
   let total = futureValueLumpSum(currentCorpus, mfRate, yearsLeft);
 
-  // Each MF SIP grows at its own rate (or the goal rate if unset).
+  // Each MF SIP grows at its own rate (or the goal rate if unset), over its contribution window.
   if (goal.funds) {
     for (const f of Object.values(goal.funds)) {
-      total += futureValueSIP(Number(f.monthlySIP || 0), Number(f.rate ?? mfRate), yearsLeft);
+      total += mfSipValueAtTarget(f, yearsLeft, mfRate);
     }
   }
 
