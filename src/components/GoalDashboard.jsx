@@ -118,6 +118,11 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
       if (corpus.fundRates[fid] != null) funds[fid].rate = corpus.fundRates[fid];
     }
   }
+  // SW-16b: read per-fund SIP start/end dates back onto the legacy-derived funds.
+  for (const fid of Object.keys(funds)) {
+    if (corpus.fundStartDates?.[fid] != null) funds[fid].startDate = corpus.fundStartDates[fid];
+    if (corpus.fundEndDates?.[fid] != null) funds[fid].endDate = corpus.fundEndDates[fid];
+  }
 
   return {
     id: goalId,
@@ -373,9 +378,15 @@ export default function GoalDashboard({
     // SW-16: extract per-fund rates ({fid: rate}) so they can be persisted next to corpus
     // for legacy goals (whose goalsConfig format can't hold them).
     const fundRates = {};
+    // SW-16b: legacy goalsConfig also can't hold per-fund SIP start/end dates — stash them
+    // alongside fundRates so legacyToV4 can read them back onto goal.funds[fid].
+    const fundStartDates = {};
+    const fundEndDates = {};
     if (goal.funds) {
       for (const [fid, fdata] of Object.entries(goal.funds)) {
         if (fdata.rate != null) fundRates[fid] = fdata.rate;
+        if (fdata.startDate != null) fundStartDates[fid] = fdata.startDate;
+        if (fdata.endDate != null) fundEndDates[fid] = fdata.endDate;
       }
     }
 
@@ -390,6 +401,8 @@ export default function GoalDashboard({
           assumedCAGR: goal.assumedCAGR,
           // SW-16: stash composite-funding data the legacy config can't hold.
           fundRates,
+          fundStartDates,
+          fundEndDates,
           instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
           // Stash goalType / startDate / totalYears too — the legacy goalsConfig blob can't
           // hold them, so legacyToV4 reads them back from here. Without this, editing a
@@ -466,6 +479,8 @@ export default function GoalDashboard({
           updatedAt: goal.corpusUpdatedAt || new Date().toISOString().slice(0, 10),
           assumedCAGR: goal.assumedCAGR,
           fundRates,
+          fundStartDates,
+          fundEndDates,
           instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
           goalType: goal.goalType,
           startDate: goal.startDate,

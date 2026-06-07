@@ -182,7 +182,7 @@ export default function GoalForm({
   const updateRow = (id, patch) => setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r));
   const removeRow = (id) => setRows(rs => rs.filter(r => r.id !== id));
 
-  const addMFRow = () => setRows(rs => [...rs, { id: nextRowId(), kind: 'MF', fundId: '', monthlySIP: '', rate: '' }]);
+  const addMFRow = () => setRows(rs => [...rs, { id: nextRowId(), kind: 'MF', fundId: '', monthlySIP: '', rate: '', startDate: todayISO(), endDate: '' }]);
   const addRDRow = () => setRows(rs => [...rs, {
     id: nextRowId(), kind: 'RD', label: 'Recurring Deposit', monthly: '', rate: 7,
     startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '',
@@ -204,7 +204,7 @@ export default function GoalForm({
     // Derive a deterministic id the same way funds.js does, so we can select it immediately.
     const fundId = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16) || 'fund';
     onAddFund({ name, category: newFund.category, index: newFund.index || null });
-    setRows(rs => [...rs, { id: nextRowId(), kind: 'MF', fundId, monthlySIP: '', rate: suggestRateForFund(fundId) }]);
+    setRows(rs => [...rs, { id: nextRowId(), kind: 'MF', fundId, monthlySIP: '', rate: suggestRateForFund(fundId), startDate: todayISO(), endDate: '' }]);
     setNewFund({ name: '', category: 'Flexi Cap', index: 'nifty500' });
     setAddFundOpen(false);
   };
@@ -501,7 +501,7 @@ function FundingRow({ row, bs, miniInput, pickerFunds, onUpdate, onRemove, onPic
   // Switching kind resets the row to that kind's defaults (keeps id).
   const switchKind = (k) => {
     if (k === row.kind) return;
-    if (k === 'MF') onUpdate(row.id, { kind: 'MF', fundId: '', monthlySIP: '', rate: '' });
+    if (k === 'MF') onUpdate(row.id, { kind: 'MF', fundId: '', monthlySIP: '', rate: '', startDate: todayISO(), endDate: '' });
     else if (k === 'RD') onUpdate(row.id, { kind: 'RD', label: 'Recurring Deposit', monthly: '', rate: 7, startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '' });
     else onUpdate(row.id, { kind: 'FD', label: 'Fixed Deposit', principal: '', rate: 7, startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '' });
   };
@@ -548,6 +548,22 @@ function FundingRow({ row, bs, miniInput, pickerFunds, onUpdate, onRemove, onPic
               style={{ ...miniInput, textAlign: 'right' }} value={row.rate}
               onChange={e => onUpdate(row.id, { rate: e.target.value })} />
             <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>%</span>
+          </div>
+          {/* SW-16b: SIP start date (default today) + OPTIONAL end date. A past start date
+              means the SIP is already running (its accrued value is in Current Corpus); an
+              end date earlier than the goal target means the SIP stops then and the amount
+              accumulated by then grows on to the target. Leave End blank to run to target. */}
+          <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 2 }}>
+            <div>
+              <label style={{ fontSize: 9, color: 'var(--text-tertiary)' }}>SIP Start</label>
+              <input aria-label="SIP start date" type="date" style={{ ...miniInput }}
+                value={row.startDate || ''} onChange={e => onUpdate(row.id, { startDate: e.target.value })} />
+            </div>
+            <div>
+              <label style={{ fontSize: 9, color: 'var(--text-tertiary)' }}>SIP End (optional)</label>
+              <input aria-label="SIP end date" type="date" style={{ ...miniInput }}
+                value={row.endDate || ''} onChange={e => onUpdate(row.id, { endDate: e.target.value })} />
+            </div>
           </div>
         </div>
       )}
@@ -615,6 +631,9 @@ function goalToRows(goal) {
       rows.push({
         id: nextRowId(), kind: 'MF', fundId: fid,
         monthlySIP: f.monthlySIP ?? '', rate: f.rate ?? '',
+        // SW-16b: SIP contribution window. Default start to today for funds saved before
+        // this field existed; end stays blank (= runs to the goal target).
+        startDate: f.startDate || todayISO(), endDate: f.endDate || '',
       });
     }
   }
@@ -646,6 +665,9 @@ function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, start
         monthlySIP: Number(r.monthlySIP) || 0,
         sipDate: funds[r.fundId]?.sipDate || 1,
         rate,
+        // SW-16b: persist the SIP contribution window. null = "from now" / "runs to target".
+        startDate: r.startDate || null,
+        endDate: r.endDate || null,
       };
       mfDefaultRate = rate; // last MF rate seen → used as goal.assumedCAGR fallback
     } else if (r.kind === 'RD') {
