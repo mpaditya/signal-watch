@@ -239,9 +239,13 @@ describe('SW-16 composite projection — per-instrument returns (MF + RD + FD)',
     expect(m).toBeGreaterThan(30000 * 30) // > ~30 monthly contributions
   })
 
-  it('instrument maturing BEFORE target contributes its maturity amount (held flat)', () => {
+  it('instrument maturing BEFORE target keeps compounding from maturity to the target', () => {
+    // Matures in 1Y at a known ₹2,00,000, target is 5Y out → that ₹2L compounds at 7% for the
+    // remaining ~4 years (NOT held flat — accumulation instruments keep earning to the goal date).
     const inst = { type: 'FD', principal: 100000, rate: 7, startDate: isoIn(-1), maturityDate: isoIn(1), maturityAmount: 200000 }
-    expect(instrumentValueAtTarget(inst, 5, isoIn(5))).toBe(200000)
+    expectClose(instrumentValueAtTarget(inst, 5, isoIn(5)), futureValueLumpSum(200000, 7, 4), 1.5)
+    // Strictly more than the old held-flat value.
+    expect(instrumentValueAtTarget(inst, 5, isoIn(5))).toBeGreaterThan(200000)
   })
 
   it('instrument maturing AFTER target contributes its accrued value at the target', () => {
@@ -455,6 +459,17 @@ describe('existing corpus grows at the goal\'s real mix, not the equity default'
       instruments: [{ type: 'RD', monthly: 10000, rate: 7, startDate: isoIn(0), maturityDate: isoIn(10) }],
     }
     expect(existingCorpusRate(goal)).toBe(8.5) // NOT the blended ~8.8%
+  })
+
+  it('an RD that matures well before the target keeps compounding to the target (the reported gap)', () => {
+    // 30k/mo RD @8% for ~7 years, but the goal target is 24 years out. Its 2033 maturity value
+    // must keep growing at 8% to 2050 — not freeze (that frozen value was the ~₹1Cr discrepancy).
+    const rd = { type: 'RD', monthly: 30000, rate: 8, startDate: isoIn(0), maturityDate: isoIn(7) }
+    const atTarget = instrumentValueAtTarget(rd, 24, isoIn(24))
+    const maturityVal = instrumentMaturityAmount(rd) // value at ~7Y
+    // It grew well beyond its maturity value (≈ maturity × 1.08^17), i.e. NOT held flat.
+    expect(atTarget).toBeGreaterThan(maturityVal * 3)
+    expectClose(atTarget, futureValueLumpSum(maturityVal, 8, 17), 2)
   })
 
   it('the corpusRate override flows into the projection', () => {
