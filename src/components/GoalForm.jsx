@@ -186,14 +186,14 @@ export default function GoalForm({
   const updateRow = (id, patch) => setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r));
   const removeRow = (id) => setRows(rs => rs.filter(r => r.id !== id));
 
-  const addMFRow = () => setRows(rs => [...rs, { id: nextRowId(), kind: 'MF', fundId: '', monthlySIP: '', rate: '', startDate: todayISO(), endDate: '' }]);
+  const addMFRow = () => setRows(rs => [...rs, { id: nextRowId(), kind: 'MF', fundId: '', monthlySIP: '', rate: '', startDate: todayISO(), endDate: '', reinvestRate: '' }]);
   const addRDRow = () => setRows(rs => [...rs, {
     id: nextRowId(), kind: 'RD', label: 'Recurring Deposit', monthly: '', rate: 7,
-    startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '',
+    startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '', reinvestRate: '',
   }]);
   const addFDRow = () => setRows(rs => [...rs, {
     id: nextRowId(), kind: 'FD', label: 'Fixed Deposit', principal: '', rate: 7,
-    startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '',
+    startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '', reinvestRate: '',
   }]);
 
   // When a fund is chosen in an MF row, prefill its rate with the index suggestion (editable).
@@ -208,7 +208,7 @@ export default function GoalForm({
     // Derive a deterministic id the same way funds.js does, so we can select it immediately.
     const fundId = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16) || 'fund';
     onAddFund({ name, category: newFund.category, index: newFund.index || null });
-    setRows(rs => [...rs, { id: nextRowId(), kind: 'MF', fundId, monthlySIP: '', rate: suggestRateForFund(fundId), startDate: todayISO(), endDate: '' }]);
+    setRows(rs => [...rs, { id: nextRowId(), kind: 'MF', fundId, monthlySIP: '', rate: suggestRateForFund(fundId), startDate: todayISO(), endDate: '', reinvestRate: '' }]);
     setNewFund({ name: '', category: 'Flexi Cap', index: 'nifty500' });
     setAddFundOpen(false);
   };
@@ -513,9 +513,9 @@ function FundingRow({ row, bs, miniInput, pickerFunds, onUpdate, onRemove, onPic
   // Switching kind resets the row to that kind's defaults (keeps id).
   const switchKind = (k) => {
     if (k === row.kind) return;
-    if (k === 'MF') onUpdate(row.id, { kind: 'MF', fundId: '', monthlySIP: '', rate: '', startDate: todayISO(), endDate: '' });
-    else if (k === 'RD') onUpdate(row.id, { kind: 'RD', label: 'Recurring Deposit', monthly: '', rate: 7, startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '' });
-    else onUpdate(row.id, { kind: 'FD', label: 'Fixed Deposit', principal: '', rate: 7, startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '' });
+    if (k === 'MF') onUpdate(row.id, { kind: 'MF', fundId: '', monthlySIP: '', rate: '', startDate: todayISO(), endDate: '', reinvestRate: '' });
+    else if (k === 'RD') onUpdate(row.id, { kind: 'RD', label: 'Recurring Deposit', monthly: '', rate: 7, startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '', reinvestRate: '' });
+    else onUpdate(row.id, { kind: 'FD', label: 'Fixed Deposit', principal: '', rate: 7, startDate: todayISO(), maturityDate: oneYearISO(), maturityAmount: '', reinvestRate: '' });
   };
 
   return (
@@ -577,6 +577,16 @@ function FundingRow({ row, bs, miniInput, pickerFunds, onUpdate, onRemove, onPic
                 value={row.endDate || ''} onChange={e => onUpdate(row.id, { endDate: e.target.value })} />
             </div>
           </div>
+          {/* Where the accumulated amount goes AFTER the SIP ends (e.g. stop equity near the
+              goal, park in debt). Only bites when SIP End is before the goal target. */}
+          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <label style={{ fontSize: 9, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>After SIP ends, reinvest at</label>
+            <input aria-label="Reinvest rate after SIP ends" type="number" min="0" step="0.5"
+              style={{ ...miniInput, width: 64, textAlign: 'right' }} value={row.reinvestRate ?? ''}
+              onChange={e => onUpdate(row.id, { reinvestRate: e.target.value })}
+              placeholder={row.rate !== '' && row.rate != null ? String(row.rate) : 'rate'} />
+            <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>% (optional)</span>
+          </div>
         </div>
       )}
 
@@ -621,6 +631,16 @@ function FundingRow({ row, bs, miniInput, pickerFunds, onUpdate, onRemove, onPic
               style={{ ...miniInput, textAlign: 'right' }} value={row.maturityAmount}
               onChange={e => onUpdate(row.id, { maturityAmount: e.target.value })} />
           </div>
+          {/* Where the maturity proceeds go AFTER maturity if it matures before the goal target
+              (e.g. roll an FD into bonds). Blank → keep compounding at this instrument's rate. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <label style={{ fontSize: 9, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>After maturity, reinvest at</label>
+            <input aria-label="Reinvest rate after maturity" type="number" min="0" step="0.25"
+              style={{ ...miniInput, width: 64, textAlign: 'right' }} value={row.reinvestRate ?? ''}
+              onChange={e => onUpdate(row.id, { reinvestRate: e.target.value })}
+              placeholder={row.rate !== '' && row.rate != null ? String(row.rate) : 'rate'} />
+            <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>% (optional)</span>
+          </div>
         </div>
       )}
     </div>
@@ -646,6 +666,7 @@ function goalToRows(goal) {
         // SW-16b: SIP contribution window. Default start to today for funds saved before
         // this field existed; end stays blank (= runs to the goal target).
         startDate: f.startDate || todayISO(), endDate: f.endDate || '',
+        reinvestRate: f.reinvestRate ?? '',
       });
     }
   }
@@ -656,6 +677,7 @@ function goalToRows(goal) {
         monthly: inst.monthly ?? '', principal: inst.principal ?? '', rate: inst.rate ?? 7,
         startDate: inst.startDate || todayISO(), maturityDate: inst.maturityDate || oneYearISO(),
         maturityAmount: inst.maturityAmount ?? '',
+        reinvestRate: inst.reinvestRate ?? '',
       });
     }
   }
@@ -680,6 +702,8 @@ function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, start
         // SW-16b: persist the SIP contribution window. null = "from now" / "runs to target".
         startDate: r.startDate || null,
         endDate: r.endDate || null,
+        // Rate the accumulated amount compounds at after the SIP ends. null = keep own rate.
+        reinvestRate: (r.reinvestRate === '' || r.reinvestRate == null) ? null : Number(r.reinvestRate),
       };
       mfDefaultRate = rate; // last MF rate seen → used as goal.assumedCAGR fallback
     } else if (r.kind === 'RD') {
@@ -688,6 +712,7 @@ function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, start
         monthly: Number(r.monthly) || 0, rate: Number(r.rate) || 0,
         startDate: r.startDate, maturityDate: r.maturityDate,
         maturityAmount: r.maturityAmount === '' ? null : Number(r.maturityAmount),
+        reinvestRate: (r.reinvestRate === '' || r.reinvestRate == null) ? null : Number(r.reinvestRate),
       });
     } else if (r.kind === 'FD') {
       instruments.push({
@@ -695,6 +720,7 @@ function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, start
         principal: Number(r.principal) || 0, rate: Number(r.rate) || 0,
         startDate: r.startDate, maturityDate: r.maturityDate,
         maturityAmount: r.maturityAmount === '' ? null : Number(r.maturityAmount),
+        reinvestRate: (r.reinvestRate === '' || r.reinvestRate == null) ? null : Number(r.reinvestRate),
       });
     }
   }

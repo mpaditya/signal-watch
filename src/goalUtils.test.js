@@ -472,6 +472,29 @@ describe('existing corpus grows at the goal\'s real mix, not the equity default'
     expectClose(atTarget, futureValueLumpSum(maturityVal, 8, 17), 2)
   })
 
+  it('a per-instrument reinvestRate compounds RD/FD proceeds at the safer rate after maturity', () => {
+    // 30k RD @8% maturing in 7Y on a 24Y goal, then reinvested at 6% (e.g. moved to bonds).
+    const rd = { type: 'RD', monthly: 30000, rate: 8, startDate: isoIn(0), maturityDate: isoIn(7), reinvestRate: 6 }
+    const maturityVal = instrumentMaturityAmount(rd)            // accumulated @8% over ~7Y
+    const atTarget = instrumentValueAtTarget(rd, 24, isoIn(24)) // then @6% for ~17Y
+    expectClose(atTarget, futureValueLumpSum(maturityVal, 6, 17), 2)
+    // Lower than if it had kept compounding at its own 8%.
+    expect(atTarget).toBeLessThan(futureValueLumpSum(maturityVal, 8, 17))
+  })
+
+  it('a per-fund reinvestRate compounds a stopped MF SIP at the safer rate to the target', () => {
+    // 10k equity SIP @12% run for 5 of 10 years, then parked at 6% (de-risked near the goal).
+    const goal = {
+      goalType: 'retirement', assumedCAGR: 12, currentCorpus: 0,
+      funds: { a: { monthlySIP: 10000, rate: 12, endDate: isoIn(5), reinvestRate: 6 } },
+    }
+    const proj = projectGoalComposite(goal, 10)
+    const fvAtSipEnd = futureValueSIP(10000, 12, 5)
+    expectClose(proj, futureValueLumpSum(fvAtSipEnd, 6, 5), 2)
+    // Less than if it had kept growing at the equity 12% after the SIP stopped.
+    expect(proj).toBeLessThan(futureValueLumpSum(fvAtSipEnd, 12, 5))
+  })
+
   it('the corpusRate override flows into the projection', () => {
     const base = {
       goalType: 'retirement', assumedCAGR: 10, currentCorpus: 1000000, targetDate: isoIn(10),
