@@ -550,6 +550,16 @@ function yearsBetween(fromStr, toStr) {
   return (to - from) / (365.25 * 24 * 60 * 60 * 1000);
 }
 
+// The rate a source's proceeds compound at AFTER it stops contributing — i.e. once an RD/FD
+// matures, or once an MF SIP ends — on its way to the goal target. Captures the common move of
+// rolling a matured/stopped investment into a different, usually safer, instrument class
+// (e.g. stop an equity SIP near the goal and park it in debt). An explicit per-source
+// `reinvestRate` wins; blank → keep compounding at the source's own contribution rate.
+function reinvestRateOf(source, ownRate) {
+  if (source && source.reinvestRate != null && source.reinvestRate !== '') return Number(source.reinvestRate);
+  return Number(ownRate || 0);
+}
+
 // Maturity amount of an RD/FD: explicit override if the user entered the contracted figure,
 // otherwise computed from contribution + rate over its full term (start → maturity).
 export function instrumentMaturityAmount(inst) {
@@ -580,11 +590,11 @@ export function instrumentValueAtTarget(inst, yearsLeft, targetDateStr) {
     return 0;
   }
 
-  // Matured on/before target: take the maturity amount, then compound it at the instrument's
-  // own rate for the years remaining between maturity and the target.
+  // Matured on/before target: take the maturity amount, then compound it for the years between
+  // maturity and the target — at the per-instrument reinvest rate if set, else its own rate.
   const maturityVal = instrumentMaturityAmount(inst);
   const yearsAfterMaturity = Math.max(0, yearsLeft - Math.max(0, yearsToMaturity));
-  return futureValueLumpSum(maturityVal, Number(inst.rate || 0), yearsAfterMaturity);
+  return futureValueLumpSum(maturityVal, reinvestRateOf(inst, inst.rate), yearsAfterMaturity);
 }
 
 // Value an MF SIP contributes to the goal AT the target date, honouring an optional
@@ -618,8 +628,9 @@ function mfSipValueAtTarget(f, yearsLeft, mfRate) {
 
   const activeYears = endYears - startYears;
   const fvAtSipEnd = futureValueSIP(m, r, activeYears); // value the moment the SIP stops
-  // Grow that accumulated lump from the SIP-end date to the target date.
-  return futureValueLumpSum(fvAtSipEnd, r, yearsLeft - endYears);
+  // Grow that accumulated lump from the SIP-end date to the target — at the per-fund reinvest
+  // rate if set (e.g. moved to debt near the goal), else the SIP's own rate.
+  return futureValueLumpSum(fvAtSipEnd, reinvestRateOf(f, r), yearsLeft - endYears);
 }
 
 // Amount-weighted blend of the goal's EXPLICIT funding sources (MF SIPs + RD/FD), excluding the

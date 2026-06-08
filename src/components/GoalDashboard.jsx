@@ -122,6 +122,7 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
   for (const fid of Object.keys(funds)) {
     if (corpus.fundStartDates?.[fid] != null) funds[fid].startDate = corpus.fundStartDates[fid];
     if (corpus.fundEndDates?.[fid] != null) funds[fid].endDate = corpus.fundEndDates[fid];
+    if (corpus.fundReinvestRates?.[fid] != null) funds[fid].reinvestRate = corpus.fundReinvestRates[fid];
   }
 
   return {
@@ -384,11 +385,13 @@ export default function GoalDashboard({
     // alongside fundRates so legacyToV4 can read them back onto goal.funds[fid].
     const fundStartDates = {};
     const fundEndDates = {};
+    const fundReinvestRates = {};
     if (goal.funds) {
       for (const [fid, fdata] of Object.entries(goal.funds)) {
         if (fdata.rate != null) fundRates[fid] = fdata.rate;
         if (fdata.startDate != null) fundStartDates[fid] = fdata.startDate;
         if (fdata.endDate != null) fundEndDates[fid] = fdata.endDate;
+        if (fdata.reinvestRate != null) fundReinvestRates[fid] = fdata.reinvestRate;
       }
     }
 
@@ -405,6 +408,7 @@ export default function GoalDashboard({
           fundRates,
           fundStartDates,
           fundEndDates,
+          fundReinvestRates,
           instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
           // Stash goalType / startDate / totalYears too — the legacy goalsConfig blob can't
           // hold them, so legacyToV4 reads them back from here. Without this, editing a
@@ -484,6 +488,7 @@ export default function GoalDashboard({
           fundRates,
           fundStartDates,
           fundEndDates,
+          fundReinvestRates,
           instruments: Array.isArray(goal.instruments) ? goal.instruments : [],
           goalType: goal.goalType,
           startDate: goal.startDate,
