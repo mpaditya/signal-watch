@@ -562,17 +562,29 @@ export function instrumentMaturityAmount(inst) {
 }
 
 // Value an RD/FD instrument contributes to the goal AT the goal's target date.
-// - Matures on/before target  → its maturity amount, held flat to target (conservative:
-//   we don't assume reinvestment of a matured deposit).
-// - Matures after target       → its accrued value at the target date (project to yearsLeft).
+// - Matures AFTER target  → its accrued value at the target date (project to yearsLeft).
+// - Matures ON/BEFORE target → its maturity amount, then KEPT GROWING at its own rate from the
+//   maturity date to the target. (Previously it was held flat — a "no reinvestment" assumption
+//   that badly under-projected accumulation instruments like EPF/NPS, whose matured corpus
+//   obviously keeps compounding to the goal date. Growing at the instrument's own rate matches
+//   the natural "it all keeps earning the same rate" expectation; enter a known maturity amount
+//   to pin the value at maturity, and it still compounds from there to the target.)
 export function instrumentValueAtTarget(inst, yearsLeft, targetDateStr) {
   const now = new Date().toISOString().slice(0, 10);
-  const maturesAfterTarget = yearsBetween(now, inst.maturityDate) > yearsLeft;
-  if (!maturesAfterTarget) return instrumentMaturityAmount(inst);
+  const yearsToMaturity = yearsBetween(now, inst.maturityDate);
+
   // Still running at the target date — accrue only up to the target horizon.
-  if (inst.type === 'FD') return futureValueLumpSum(Number(inst.principal || 0), Number(inst.rate || 0), yearsLeft);
-  if (inst.type === 'RD') return futureValueSIP(Number(inst.monthly || 0), Number(inst.rate || 0), yearsLeft);
-  return 0;
+  if (yearsToMaturity > yearsLeft) {
+    if (inst.type === 'FD') return futureValueLumpSum(Number(inst.principal || 0), Number(inst.rate || 0), yearsLeft);
+    if (inst.type === 'RD') return futureValueSIP(Number(inst.monthly || 0), Number(inst.rate || 0), yearsLeft);
+    return 0;
+  }
+
+  // Matured on/before target: take the maturity amount, then compound it at the instrument's
+  // own rate for the years remaining between maturity and the target.
+  const maturityVal = instrumentMaturityAmount(inst);
+  const yearsAfterMaturity = Math.max(0, yearsLeft - Math.max(0, yearsToMaturity));
+  return futureValueLumpSum(maturityVal, Number(inst.rate || 0), yearsAfterMaturity);
 }
 
 // Value an MF SIP contributes to the goal AT the target date, honouring an optional
