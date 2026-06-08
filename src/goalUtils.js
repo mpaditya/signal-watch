@@ -610,43 +610,34 @@ function mfSipValueAtTarget(f, yearsLeft, mfRate) {
   return futureValueLumpSum(fvAtSipEnd, r, yearsLeft - endYears);
 }
 
-// Future value each EXPLICIT funding source (MF SIPs + RD/FD) contributes at the target date,
-// paired with its rate. Excludes the existing corpus (handled separately). Used by both the
-// projection and the blended-return display so they stay consistent.
-function explicitSourceFVs(goal, yearsLeft, mfRate) {
-  const out = []; // [{ fv, rate }]
-  if (goal.funds) {
-    for (const f of Object.values(goal.funds)) {
-      out.push({ fv: mfSipValueAtTarget(f, yearsLeft, mfRate), rate: Number(f.rate ?? mfRate) });
-    }
+// Amount-weighted blend of the goal's EXPLICIT funding sources (MF SIPs + RD/FD), excluding the
+// existing corpus. This is the goal's "contribution mix" rate — e.g. a 15k MF SIP @10% + two 10k
+// RDs @7% blends to (15000·10 + 10000·7 + 10000·7)/35000 = 8.29%.
+function explicitSourcesBlend(goal) {
+  const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
+  let weighted = 0, weight = 0;
+  const add = (amount, rate) => { weighted += amount * rate; weight += amount; };
+  if (goal.funds) for (const f of Object.values(goal.funds)) add(Number(f.monthlySIP || 0), Number(f.rate ?? mfRate));
+  if (Array.isArray(goal.instruments)) for (const inst of goal.instruments) {
+    const amt = inst.type === 'FD' ? Number(inst.principal || 0) : Number(inst.monthly || 0);
+    add(amt, Number(inst.rate || 0));
   }
-  if (Array.isArray(goal.instruments)) {
-    for (const inst of goal.instruments) {
-      out.push({ fv: instrumentValueAtTarget(inst, yearsLeft, goal.targetDate), rate: Number(inst.rate || 0) });
-    }
-  }
-  return out;
+  return weight > 0 ? weighted / weight : mfRate;
 }
 
 // The rate the EXISTING corpus grows at.
 //
-// BUG FIX: the existing corpus used to grow at the goal's `assumedCAGR`, which defaults to the
-// equity rate (~12%) even when the goal holds ZERO equity. For an all-RD/FD goal (e.g. EPF/NPS
-// + FDs) that massively over-projected the corpus AND dominated the "blended return" display
-// (a ₹99L corpus at 12% drowned out 4 RDs at 6.5–7%, showing ~12% instead of ~6.7%).
-//
-// Now: if the goal actually has MF/equity SIPs, the existing corpus is treated as equity and
-// grows at the MF rate (as before). Otherwise it grows at the value-weighted blend of the
-// goal's real (debt) sources — so an all-debt goal's corpus grows at ~the debt rate, never the
-// equity default. Falls back to the assumed/default CAGR only when there are no funding sources.
-export function existingCorpusRate(goal, yearsLeft) {
-  const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
-  const hasEquitySIP = goal.funds && Object.values(goal.funds).some(f => Number(f.monthlySIP || 0) > 0);
-  if (hasEquitySIP) return mfRate;
-  const fvs = explicitSourceFVs(goal, yearsLeft, mfRate);
-  const totFV = fvs.reduce((s, x) => s + x.fv, 0);
-  if (totFV <= 0) return mfRate;
-  return fvs.reduce((s, x) => s + x.fv * x.rate, 0) / totFV;
+// Priority:
+//   1. An explicit user override `goal.corpusRate` (e.g. the corpus is parked in an FD at a
+//      known rate) — use it verbatim.
+//   2. Otherwise default to the goal's contribution-mix blend (explicitSourcesBlend) — so the
+//      existing corpus grows at the same blended rate as your ongoing funding, NOT the equity
+//      default. (Previously it grew at `assumedCAGR` ≈ the equity rate even for an all-debt
+//      goal, which over-projected the corpus and dragged the displayed blend up to ~12%.)
+//   3. Fall back to the assumed/default CAGR only when there are no funding sources at all.
+export function existingCorpusRate(goal) {
+  if (goal.corpusRate != null && goal.corpusRate !== '') return Number(goal.corpusRate);
+  return explicitSourcesBlend(goal);
 }
 
 // Project the full goal corpus at the target date by summing every funding source at its
@@ -657,7 +648,7 @@ export function projectGoalComposite(goal, yearsLeft) {
 
   // Existing corpus grows at the rate of the goal's ACTUAL mix (equity rate only if the goal
   // has equity SIPs; otherwise the debt blend) — never blindly at the equity default.
-  let total = futureValueLumpSum(currentCorpus, existingCorpusRate(goal, yearsLeft), yearsLeft);
+  let total = futureValueLumpSum(currentCorpus, existingCorpusRate(goal), yearsLeft);
 
   // Each MF SIP grows at its own rate (or the goal rate if unset), over its contribution window.
   if (goal.funds) {
@@ -683,11 +674,7 @@ export function projectGoalComposite(goal, yearsLeft) {
 // only if the goal has equity SIPs, otherwise the blend of the goal's real (debt) sources.
 export function blendedReturn(goal) {
   const mfRate = goal.assumedCAGR || GOAL_TYPES[goal.goalType]?.defaultCAGR || 10;
-  // Horizon is needed only to derive the existing-corpus rate for a no-equity goal. Prefer the
-  // real targetDate; fall back to totalYears (the live form preview may not have targetDate yet).
-  let yearsLeft = computeYearsLeft(goal.targetDate);
-  if (!(yearsLeft > 0)) yearsLeft = Number(goal.totalYears) || 1;
-  const corpusRate = existingCorpusRate(goal, yearsLeft);
+  const corpusRate = existingCorpusRate(goal);
 
   let weighted = 0, weight = 0;
   const add = (amount, rate) => { weighted += amount * rate; weight += amount; };
@@ -794,6 +781,9 @@ export function createGoal({
   targetLakh,
   currentCorpus = 0,
   assumedCAGR,
+  // Optional override for the rate the EXISTING corpus grows at (e.g. parked in an FD).
+  // null/undefined → existingCorpusRate() defaults it to the goal's blended contribution rate.
+  corpusRate = null,
   funds = {},
   // SW-16: a goal can be funded by a MIX of instruments. `instruments` is an array of
   // RD/FD deposits (each with its own fixed `rate`), and each MF entry in `funds` may
@@ -820,6 +810,7 @@ export function createGoal({
     corpusUpdatedAt: currentCorpus > 0 ? now : null,
     targetLakh: targetLakh || 0,
     assumedCAGR: assumedCAGR ?? typeDef.defaultCAGR,
+    corpusRate: corpusRate ?? null,
     // Preserve per-fund rate: funds is { fid: { monthlySIP, sipDate, rate? } }.
     funds: funds || {},
     instruments: Array.isArray(instruments) ? instruments : [],

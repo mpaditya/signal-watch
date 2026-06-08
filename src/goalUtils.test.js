@@ -434,4 +434,37 @@ describe('existing corpus grows at the goal\'s real mix, not the equity default'
     // Sanity: strictly less than if the corpus had (wrongly) grown at the 12% equity default.
     expect(projected).toBeLessThan(futureValueLumpSum(9900000, 12, 10) + futureValueSIP(45000, 6.5, 10))
   })
+
+  it('defaults the corpus rate to the amount-weighted blend of a mixed goal (the 8.29% example)', () => {
+    // 15k MF SIP @10% + two 10k RDs @7% → (15000·10 + 10000·7 + 10000·7)/35000 = 8.2857%.
+    const goal = {
+      goalType: 'retirement', assumedCAGR: 10, currentCorpus: 500000,
+      funds: { a: { monthlySIP: 15000, rate: 10 } },
+      instruments: [
+        { type: 'RD', monthly: 10000, rate: 7, startDate: isoIn(0), maturityDate: isoIn(10) },
+        { type: 'RD', monthly: 10000, rate: 7, startDate: isoIn(0), maturityDate: isoIn(10) },
+      ],
+    }
+    expectClose(existingCorpusRate(goal), 8.2857, 0.1)
+  })
+
+  it('a corpusRate override is used verbatim (e.g. corpus parked in an FD)', () => {
+    const goal = {
+      goalType: 'retirement', assumedCAGR: 10, currentCorpus: 500000, corpusRate: 8.5,
+      funds: { a: { monthlySIP: 15000, rate: 10 } },
+      instruments: [{ type: 'RD', monthly: 10000, rate: 7, startDate: isoIn(0), maturityDate: isoIn(10) }],
+    }
+    expect(existingCorpusRate(goal)).toBe(8.5) // NOT the blended ~8.8%
+  })
+
+  it('the corpusRate override flows into the projection', () => {
+    const base = {
+      goalType: 'retirement', assumedCAGR: 10, currentCorpus: 1000000, targetDate: isoIn(10),
+      funds: {}, instruments: [{ type: 'RD', monthly: 10000, rate: 7, startDate: isoIn(0), maturityDate: isoIn(10) }],
+    }
+    const atDefault = projectGoalComposite(base, 10)                       // corpus @7 (the RD blend)
+    const atOverride = projectGoalComposite({ ...base, corpusRate: 9 }, 10) // corpus @9
+    expect(atOverride).toBeGreaterThan(atDefault)
+    expectClose(atOverride, futureValueLumpSum(1000000, 9, 10) + futureValueSIP(10000, 7, 10), 2)
+  })
 })
