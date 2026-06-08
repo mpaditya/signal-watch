@@ -82,6 +82,8 @@ export default function GoalForm({
   const [targetLakh,    setTargetLakh]    = useState('');
   // SW-16: current corpus entered in ₹ LAKHS (matches the target + Update-Corpus modal).
   const [currentCorpusLakh, setCurrentCorpusLakh] = useState('');
+  // Optional override for the existing-corpus return %. Blank = use the goal's blended rate.
+  const [corpusRate,    setCorpusRate]    = useState('');
   const [errors,        setErrors]        = useState([]);
 
   // ── Funding rows (the unified MF/RD/FD list) ──────────────────────
@@ -107,6 +109,7 @@ export default function GoalForm({
       setTotalYears(existingGoal.totalYears);
       setTargetLakh(existingGoal.targetLakh || '');
       setCurrentCorpusLakh(existingGoal.currentCorpus ? existingGoal.currentCorpus / 100000 : '');
+      setCorpusRate(existingGoal.corpusRate != null && existingGoal.corpusRate !== '' ? String(existingGoal.corpusRate) : '');
       setRows(goalToRows(existingGoal));
     } else {
       const dt = 'retirement';
@@ -117,6 +120,7 @@ export default function GoalForm({
       setTotalYears(GOAL_TYPES[dt].defaultHorizonYears);
       setTargetLakh('');
       setCurrentCorpusLakh('');
+      setCorpusRate('');
       setRows([]);
     }
     setErrors([]);
@@ -162,8 +166,8 @@ export default function GoalForm({
 
   // ── Live preview goal → blended return + projection-ready shape ───
   const previewGoal = useMemo(
-    () => rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, startDate, rows, suggestedMFRate }),
-    [goalType, totalYears, targetLakh, currentCorpusLakh, startDate, rows, suggestedMFRate]
+    () => rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, startDate, rows, suggestedMFRate, corpusRate }),
+    [goalType, totalYears, targetLakh, currentCorpusLakh, startDate, rows, suggestedMFRate, corpusRate]
   );
   const blended = useMemo(() => blendedReturn(previewGoal), [previewGoal]);
 
@@ -212,7 +216,7 @@ export default function GoalForm({
   // ── Submit ────────────────────────────────────────────────────────
   const handleSubmit = () => {
     const resolvedLabel = (label || '').trim() || GOAL_TYPES[goalType]?.label || 'Goal';
-    const goalData = rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, startDate, rows, suggestedMFRate, label: resolvedLabel, emoji });
+    const goalData = rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, startDate, rows, suggestedMFRate, corpusRate, label: resolvedLabel, emoji });
     const errs = validateGoal(goalData);
     if (errs.length > 0) { setErrors(errs); return; }
     const saved = isEdit ? updateGoal(existingGoal, goalData) : createGoal(goalData);
@@ -339,9 +343,16 @@ export default function GoalForm({
             onChange={e => setCurrentCorpusLakh(e.target.value)}
             placeholder="e.g., 3.5 — MF units already invested" min="0" step="0.1" />
           <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 3 }}>
-            Existing invested value. Grows at your goal's blended rate — the equity rate if
-            you have MF SIPs, otherwise the blended rate of your RD/FD/debt sources. RD/FD
-            principals are entered as funding sources below, not here.
+            Existing invested value. By default it grows at your goal's blended rate (set below
+            if it's parked somewhere specific). RD/FD principals are entered as funding sources
+            below, not here.
+          </div>
+          {/* Optional: override the rate the existing corpus grows at (e.g. it's in an FD). */}
+          <div style={{ marginTop: 8 }}>
+            <label style={labelStyle}>Return on existing corpus (% — optional)</label>
+            <input style={inputStyle} type="number" min="0" step="0.5" value={corpusRate}
+              onChange={e => setCorpusRate(e.target.value)}
+              placeholder={`Leave blank to use the blended rate (${blended}%)`} />
           </div>
         </div>
 
@@ -653,7 +664,7 @@ function goalToRows(goal) {
 
 // Convert editable rows back into the persisted/projection-ready goal shape.
 // `suggestedMFRate` is the fallback rate for MF rows whose rate field is blank.
-function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, startDate, rows, suggestedMFRate, label, emoji }) {
+function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, startDate, rows, suggestedMFRate, corpusRate, label, emoji }) {
   const funds = {};
   const instruments = [];
   let mfDefaultRate = suggestedMFRate;
@@ -700,9 +711,12 @@ function rowsToGoal({ goalType, totalYears, targetLakh, currentCorpusLakh, start
     targetLakh: parseFloat(targetLakh) || 0,
     // ₹ lakhs → rupees (matches Update-Corpus modal convention).
     currentCorpus: (parseFloat(currentCorpusLakh) || 0) * 100000,
-    // assumedCAGR is the MF default rate (used by projectGoalComposite for the existing
-    // corpus and any MF without an explicit rate). Kept on the goal for back-compat.
+    // assumedCAGR is the MF default rate (used as the fallback for any MF without an explicit
+    // rate, and as the goal's nominal equity rate). Kept on the goal for back-compat.
     assumedCAGR: mfDefaultRate,
+    // Optional existing-corpus return override. Blank → existingCorpusRate() defaults it to
+    // the goal's blended contribution rate.
+    corpusRate: (corpusRate === '' || corpusRate == null) ? null : Number(corpusRate),
     funds,
     instruments,
   };

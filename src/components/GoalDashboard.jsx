@@ -136,6 +136,8 @@ function legacyToV4(goalId, legacyGoal, corpusData) {
     corpusUpdatedAt: corpus.updatedAt || null,
     targetLakh: legacyGoal.targetLakh || 0,
     assumedCAGR: corpus.assumedCAGR || typeDef?.defaultCAGR || 12,
+    // SW-16d: optional existing-corpus return override (stashed since legacy config can't hold it).
+    corpusRate: corpus.corpusRate ?? null,
     funds,
     instruments: Array.isArray(corpus.instruments) ? corpus.instruments : [],
     // SW-14: legacy goals persist their status in corpus storage (corpus.status).
@@ -410,6 +412,7 @@ export default function GoalDashboard({
           goalType: goal.goalType,
           startDate: goal.startDate,
           totalYears: goal.totalYears,
+          corpusRate: goal.corpusRate ?? null,
         },
       };
       setCorpusData(updated);
@@ -485,6 +488,7 @@ export default function GoalDashboard({
           goalType: goal.goalType,
           startDate: goal.startDate,
           totalYears: goal.totalYears,
+          corpusRate: goal.corpusRate ?? null,
         },
       };
       setCorpusData(updatedCorpus);
